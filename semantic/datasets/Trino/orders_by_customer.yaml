@@ -1,0 +1,48 @@
+# Virtual dataset: Superset's native engine has no join graph, so joins are
+# written once here as SQL. Keep the grain explicit (one row per order) to
+# avoid double counting when you add more joins.
+table_name: orders_by_customer
+catalog: tpch
+schema: tiny
+sql: |-
+  SELECT
+    o.orderkey,
+    o.orderdate,
+    o.orderstatus,
+    o.totalprice,
+    c.mktsegment AS market_segment,
+    n.name       AS nation
+  FROM tpch.tiny.orders o
+  JOIN tpch.tiny.customer c ON o.custkey = c.custkey
+  JOIN tpch.tiny.nation   n ON c.nationkey = n.nationkey
+main_dttm_col: orderdate
+description: Orders enriched with customer segment and nation. Grain = order.
+cache_timeout: null
+filter_select_enabled: true
+uuid: 1f92bbad-9a76-4f7c-87fc-7fb5bafc25c4
+database_uuid: c558dd1e-a16c-4438-8dda-1e86d43a733c
+is_managed_externally: true
+external_url: ${GIT_REPO_URL:-}
+version: 1.0.0
+
+metrics:
+  - metric_name: total_revenue
+    verbose_name: Total Revenue
+    expression: SUM(totalprice)
+    description: Sum of order value.
+    d3format: ",.0f"
+
+  - metric_name: revenue_share
+    verbose_name: Revenue Share of Total
+    # Window over the grouped result: share of each group in the total.
+    expression: SUM(totalprice) / SUM(SUM(totalprice)) OVER ()
+    description: Each group's share of total revenue in the current query.
+    d3format: ".1%"
+
+columns:
+  - {column_name: orderkey,       type: BIGINT,  groupby: false, filterable: true}
+  - {column_name: orderdate,      type: DATE,    groupby: true,  filterable: true, is_dttm: true, verbose_name: Order Date}
+  - {column_name: orderstatus,    type: VARCHAR, groupby: true,  filterable: true, verbose_name: Order Status}
+  - {column_name: totalprice,     type: DOUBLE,  groupby: false, filterable: true, verbose_name: Order Value}
+  - {column_name: market_segment, type: VARCHAR, groupby: true,  filterable: true, verbose_name: Market Segment}
+  - {column_name: nation,         type: VARCHAR, groupby: true,  filterable: true, verbose_name: Nation}

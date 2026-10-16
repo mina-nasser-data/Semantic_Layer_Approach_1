@@ -1,0 +1,77 @@
+name: semantic-layer
+
+# Local stack: Trino (query engine) + Superset (BI + native semantic layer)
+# + Postgres (Superset metadata DB) + semantic-sync (loads ./semantic YAML into Superset).
+#
+#   cp .env.example .env      # then edit the values
+#   docker compose up -d --build
+#   open http://localhost:8088
+
+services:
+  trino:
+    image: trinodb/trino:${TRINO_VERSION:-476}
+    ports:
+      - "8080:8080"
+    volumes:
+      # Catalogs = the warehouse connections Trino exposes (tpch is a built-in sample).
+      - ./trino/catalog:/etc/trino/catalog:ro
+
+  superset-db:
+    image: postgres:16
+    environment:
+      POSTGRES_DB: superset
+      POSTGRES_USER: superset
+      POSTGRES_PASSWORD: ${SUPERSET_DB_PASSWORD}
+    volumes:
+      - superset-db-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U superset -d superset"]
+      interval: 5s
+      retries: 20
+
+  superset:
+    build:
+      context: ./superset
+      args:
+        SUPERSET_VERSION: ${SUPERSET_VERSION:-6.0.0}
+    ports:
+      - "8088:8088"
+    environment:
+      SUPERSET_SECRET_KEY: ${SUPERSET_SECRET_KEY}
+      DATABASE_URL: postgresql+psycopg2://superset:${SUPERSET_DB_PASSWORD}@superset-db:5432/superset
+      ADMIN_USERNAME: ${SUPERSET_ADMIN_USERNAME}
+      ADMIN_PASSWORD: ${SUPERSET_ADMIN_PASSWORD}
+    volumes:
+      - ./superset/superset_config.py:/app/pythonpath/superset_config.py:ro
+    depends_on:
+      superset-db:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8088/health')"]
+      interval: 10s
+      start_period: 60s
+      retries: 30
+
+  # Pushes the YAML in ./semantic into Superset through its REST API.
+  # In --watch mode it re-imports every time a file in ./semantic changes,
+  # so locally you just edit YAML and refresh Superset.
+  semantic-sync:
+    build: ./sync
+    environment:
+      SUPERSET_URL: http://superset:8088
+      SUPERSET_USERNAME: ${SUPERSET_ADMIN_USERNAME}
+      SUPERSET_PASSWORD: ${SUPERSET_ADMIN_PASSWORD}
+      # Values substituted into ${...} placeholders inside the YAML files:
+      TRINO_URI: trino://superset@trino:8080/tpch
+      GIT_REPO_URL: ${GIT_REPO_URL:-}
+    volumes:
+      - ./semantic:/semantic:ro
+    command: ["python", "sync.py", "/semantic", "--watch", "--smoke-test"]
+    depends_on:
+      superset:
+        condition: service_healthy
+      trino:
+        condition: service_started
+
+volumes:
+  superset-db-data:

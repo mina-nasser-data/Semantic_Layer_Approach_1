@@ -1,0 +1,45 @@
+# Git is the source of truth; this pipeline is the only thing that writes
+# datasets/metrics into staging and prod Superset.
+#
+# CI/CD variables (Settings > CI/CD > Variables, masked + protected):
+#   STAGING_SUPERSET_URL, PROD_SUPERSET_URL
+#   SUPERSET_USERNAME, SUPERSET_PASSWORD      (service account)
+#   STAGING_TRINO_URI, PROD_TRINO_URI
+#   SUPERSET_DB_PASSWORDS                     (optional, JSON)
+
+stages: [validate, staging, prod]
+
+default:
+  image: python:3.12-slim
+  before_script:
+    - pip install -q -r sync/requirements.txt
+
+validate:
+  stage: validate
+  variables:
+    TRINO_URI: "trino://ci@placeholder:8080/x"   # only needs to render
+  script:
+    - python sync/sync.py semantic --validate-only
+  rules:
+    - changes: [semantic/**/*, sync/**/*]
+
+deploy_staging:
+  stage: staging
+  script:
+    - export SUPERSET_URL="$STAGING_SUPERSET_URL" TRINO_URI="$STAGING_TRINO_URI"
+    - export GIT_REPO_URL="$CI_PROJECT_URL/-/blob/$CI_COMMIT_SHA"
+    - python sync/sync.py semantic --smoke-test
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+      changes: [semantic/**/*, sync/**/*]
+
+deploy_prod:
+  stage: prod
+  environment: production
+  script:
+    - export SUPERSET_URL="$PROD_SUPERSET_URL" TRINO_URI="$PROD_TRINO_URI"
+    - export GIT_REPO_URL="$CI_PROJECT_URL/-/blob/$CI_COMMIT_SHA"
+    - python sync/sync.py semantic --smoke-test
+  rules:
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+      changes: [semantic/**/*, sync/**/*]
