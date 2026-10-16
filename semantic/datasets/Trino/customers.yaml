@@ -1,0 +1,102 @@
+# =============================================================================
+# Customer-level virtual dataset. Grain = one row per customer.
+#
+# Transactions are first aggregated per customer in a subquery, then LEFT JOINed
+# to dim_customer. The subquery returns at most one row per customer_key, so the
+# join is 1:1: no fan-out, and customers with no transactions are kept (with 0s).
+#
+# Use this dataset for "how many customers / how active / how valuable" questions.
+# For transaction amounts by date, branch, product, ... use the transactions dataset.
+# =============================================================================
+table_name: customers
+catalog: warehouse
+schema: mart
+sql: |-
+  SELECT c.customer_id, c.customer_name, c.segment, c.governorate, c.join_date,
+         date_diff('year', c.join_date, current_date) AS tenure_years,
+         COALESCE(t.txn_count, 0)           AS txn_count,
+         COALESCE(t.customer_net_amount, 0) AS customer_net_amount,
+         t.first_txn_date,
+         t.last_txn_date
+  FROM warehouse.mart.dim_customer c
+  LEFT JOIN (
+    SELECT f.customer_key,
+           COUNT(*)                                                   AS txn_count,
+           SUM(CASE WHEN NOT f.is_reversed THEN f.amount ELSE 0 END)  AS customer_net_amount,
+           MIN(d.full_date)                                           AS first_txn_date,
+           MAX(d.full_date)                                           AS last_txn_date
+    FROM warehouse.mart.fact_transaction f
+    JOIN warehouse.mart.dim_date d ON f.date_key = d.date_key
+    GROUP BY f.customer_key
+  ) t ON c.customer_key = t.customer_key
+main_dttm_col: join_date            # Time filters on this dataset mean "customers who joined in ..."
+description: One row per customer with lifetime transaction activity. Grain = customer.
+cache_timeout: null
+filter_select_enabled: true
+uuid: 0052964f-bd01-48a3-b683-24ab395c49ea        # never change once deployed
+database_uuid: c558dd1e-a16c-4438-8dda-1e86d43a733c
+is_managed_externally: true
+external_url: ${GIT_REPO_URL:-}
+version: 1.0.0
+
+metrics:
+  - metric_name: customer_count
+    verbose_name: Customers
+    expression: COUNT(*)            # One row per customer, so COUNT(*) = number of customers
+    description: Number of customers, with or without transactions.
+    d3format: ",d"
+
+  - metric_name: active_customers_90d
+    verbose_name: Active Customers (90 days)
+    # Rolling window: relative to today, so the value changes over time.
+    expression: >-
+      SUM(CASE WHEN last_txn_date >= current_date - INTERVAL '90' DAY THEN 1 ELSE 0 END)
+    description: Customers with at least one transaction in the last 90 days.
+    d3format: ",d"
+
+  - metric_name: active_rate_90d
+    verbose_name: Active Rate (90 days)
+    # CAST avoids integer division in Trino (1/3 = 0).
+    expression: >-
+      CAST(SUM(CASE WHEN last_txn_date >= current_date - INTERVAL '90' DAY THEN 1 ELSE 0 END) AS DOUBLE)
+      / NULLIF(COUNT(*), 0)
+    description: Share of customers with at least one transaction in the last 90 days.
+    d3format: ".1%"
+
+  - metric_name: avg_net_amount_per_customer
+    verbose_name: Avg Net Amount per Customer
+    # Divides by all customers, so customers with no transactions pull the average down.
+    expression: SUM(customer_net_amount) / NULLIF(COUNT(*), 0)
+    description: Lifetime net transaction amount (EGP, reversed excluded) divided by number of customers.
+    d3format: ",.2f"
+
+  - metric_name: avg_txns_per_customer
+    verbose_name: Avg Transactions per Customer
+    expression: CAST(SUM(txn_count) AS DOUBLE) / NULLIF(COUNT(*), 0)
+    description: Lifetime number of transactions divided by number of customers.
+    d3format: ",.1f"
+
+  - metric_name: high_value_customers
+    verbose_name: High Value Customers
+    # Threshold is a business rule: change it here and every chart follows.
+    expression: SUM(CASE WHEN customer_net_amount >= 1000000 THEN 1 ELSE 0 END)
+    description: Customers with lifetime net transaction amount of at least 1,000,000 EGP.
+    d3format: ",d"
+
+  - metric_name: avg_tenure_years
+    verbose_name: Avg Tenure (years)
+    expression: AVG(CAST(tenure_years AS DOUBLE))
+    description: Average number of full years since customers joined the bank.
+    d3format: ",.1f"
+
+columns:
+  - {column_name: customer_id,         type: VARCHAR,         groupby: true,  filterable: true, verbose_name: Customer ID}
+  - {column_name: customer_name,       type: VARCHAR,         groupby: true,  filterable: true, verbose_name: Customer}
+  - {column_name: segment,             type: VARCHAR,         groupby: true,  filterable: true, verbose_name: Segment}
+  - {column_name: governorate,         type: VARCHAR,         groupby: true,  filterable: true, verbose_name: Governorate}
+  - {column_name: join_date,           type: DATE,            groupby: true,  filterable: true, is_dttm: true, verbose_name: Join Date}
+  - {column_name: tenure_years,        type: BIGINT,          groupby: true,  filterable: true, verbose_name: Tenure (years)}
+  - {column_name: txn_count,           type: BIGINT,          groupby: false, filterable: true, verbose_name: Lifetime Transactions}
+  - {column_name: customer_net_amount, type: "DECIMAL(38,2)", groupby: false, filterable: true, verbose_name: Lifetime Net Amount (EGP)}
+  - {column_name: first_txn_date,      type: DATE,            groupby: false, filterable: true, is_dttm: true, verbose_name: First Transaction Date}
+  - {column_name: last_txn_date,       type: DATE,            groupby: false, filterable: true, is_dttm: true, verbose_name: Last Transaction Date}
