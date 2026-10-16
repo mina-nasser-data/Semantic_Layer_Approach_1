@@ -1,0 +1,104 @@
+# =============================================================================
+# JOIN example - Virtual dataset: the fact table with every dimension of the star schema.
+# Superset has no join graph, so the joins are written once here, in SQL. Business
+# users then work with one dataset that already has region, segment, product, ...
+#
+# Grain rule: fact first, then LEFT JOIN to dimensions only, every join N:1.
+# Each transaction stays exactly one row, so no metric is double counted (fan-out).
+# Checked in Trino: COUNT(*) = COUNT(DISTINCT transaction_id) = 20000 = rows in fact_transaction.
+# =============================================================================
+table_name: transactions
+catalog: warehouse
+schema: mart
+sql: |-
+  SELECT f.transaction_id, d.full_date, d.year, d.quarter, d.month, d.month_name,
+         d.day_name, d.is_weekend,
+         c.customer_id, c.customer_name, c.segment, c.governorate,
+         b.branch_code, b.branch_name, b.city, b.region,
+         p.product_code, p.product_name, p.category,
+         f.channel, f.transaction_type, f.amount, f.fee_amount, f.is_reversed
+  FROM warehouse.mart.fact_transaction f
+  LEFT JOIN warehouse.mart.dim_date     d ON f.date_key     = d.date_key
+  LEFT JOIN warehouse.mart.dim_customer c ON f.customer_key = c.customer_key
+  LEFT JOIN warehouse.mart.dim_branch   b ON f.branch_key   = b.branch_key
+  LEFT JOIN warehouse.mart.dim_product  p ON f.product_key  = p.product_key
+main_dttm_col: full_date            # Default time column: drives time range filters and time grain (day/month/year)
+description: Bank transactions with date, customer, branch and product. Grain = transaction.
+cache_timeout: null
+filter_select_enabled: true
+uuid: d663a2a3-4540-4017-8c98-a45818eb3d7c        # never change once deployed
+database_uuid: c558dd1e-a16c-4438-8dda-1e86d43a733c
+is_managed_externally: true
+external_url: ${GIT_REPO_URL:-}
+version: 1.0.0
+
+metrics:
+  - metric_name: net_amount
+    verbose_name: Net Amount
+    expression: SUM(CASE WHEN NOT is_reversed THEN amount ELSE 0 END)
+    description: Sum of transaction amounts (EGP), excluding reversed transactions.
+    d3format: ",.2f"
+
+  - metric_name: transaction_count
+    verbose_name: Transactions
+    expression: COUNT(*)
+    description: Number of transactions, including reversed ones.
+    d3format: ",d"
+
+  - metric_name: net_fees
+    verbose_name: Net Fees
+    expression: SUM(CASE WHEN NOT is_reversed THEN fee_amount ELSE 0 END)
+    description: Fees charged (EGP), excluding reversed transactions.
+    d3format: ",.2f"
+
+  - metric_name: avg_txn_amount
+    verbose_name: Average Transaction Amount
+    # Not AVG(amount): reversed transactions must be excluded from both numerator and
+    # denominator. NULLIF avoids division by zero.
+    expression: >-
+      SUM(CASE WHEN NOT is_reversed THEN amount ELSE 0 END)
+      / NULLIF(SUM(CASE WHEN NOT is_reversed THEN 1 ELSE 0 END), 0)
+    description: Net amount divided by the number of non-reversed transactions (EGP).
+    d3format: ",.2f"
+
+  - metric_name: reversal_rate
+    verbose_name: Reversal Rate
+    # CAST avoids integer division in Trino (1/3 = 0).
+    expression: >-
+      CAST(SUM(CASE WHEN is_reversed THEN 1 ELSE 0 END) AS DOUBLE)
+      / NULLIF(COUNT(*), 0)
+    description: Share of transactions that were reversed.
+    d3format: ".2%"
+
+  - metric_name: active_customers
+    verbose_name: Active Customers
+    # DISTINCT is required: one customer has many transactions.
+    expression: COUNT(DISTINCT customer_id)
+    description: Distinct customers with at least one transaction.
+    d3format: ",d"
+
+columns:
+  - {column_name: transaction_id,   type: BIGINT,        groupby: false, filterable: true}
+  - {column_name: full_date,        type: DATE,          groupby: true,  filterable: true, is_dttm: true, verbose_name: Transaction Date}
+  - {column_name: year,             type: INTEGER,       groupby: true,  filterable: true, verbose_name: Year}
+  - {column_name: quarter,          type: INTEGER,       groupby: true,  filterable: true, verbose_name: Quarter}
+  - {column_name: month,            type: INTEGER,       groupby: true,  filterable: true, verbose_name: Month}
+  - {column_name: month_name,       type: VARCHAR,       groupby: true,  filterable: true, verbose_name: Month Name}
+  - {column_name: day_name,         type: VARCHAR,       groupby: true,  filterable: true, verbose_name: Day}
+  - {column_name: is_weekend,       type: BOOLEAN,       groupby: true,  filterable: true, verbose_name: Weekend}
+  - {column_name: customer_id,      type: VARCHAR,       groupby: true,  filterable: true, verbose_name: Customer ID}
+  - {column_name: customer_name,    type: VARCHAR,       groupby: true,  filterable: true, verbose_name: Customer}
+  - {column_name: segment,          type: VARCHAR,       groupby: true,  filterable: true, verbose_name: Segment}
+  - {column_name: governorate,      type: VARCHAR,       groupby: true,  filterable: true, verbose_name: Governorate}
+  - {column_name: branch_code,      type: VARCHAR,       groupby: true,  filterable: true, verbose_name: Branch Code}
+  - {column_name: branch_name,      type: VARCHAR,       groupby: true,  filterable: true, verbose_name: Branch}
+  - {column_name: city,             type: VARCHAR,       groupby: true,  filterable: true, verbose_name: City}
+  - {column_name: region,           type: VARCHAR,       groupby: true,  filterable: true, verbose_name: Region}
+  - {column_name: product_code,     type: VARCHAR,       groupby: true,  filterable: true, verbose_name: Product Code}
+  - {column_name: product_name,     type: VARCHAR,       groupby: true,  filterable: true, verbose_name: Product}
+  - {column_name: category,         type: VARCHAR,       groupby: true,  filterable: true, verbose_name: Product Category}
+  - {column_name: channel,          type: VARCHAR,       groupby: true,  filterable: true, verbose_name: Channel}
+  - {column_name: transaction_type, type: VARCHAR,       groupby: true,  filterable: true, verbose_name: Transaction Type}
+  - {column_name: amount,           type: "DECIMAL(18,2)", groupby: false, filterable: true, verbose_name: Amount (EGP)}
+  - {column_name: fee_amount,       type: "DECIMAL(18,2)", groupby: false, filterable: true, verbose_name: Fee (EGP)}
+  - {column_name: is_reversed,      type: BOOLEAN,       groupby: true,  filterable: true, verbose_name: Reversed}

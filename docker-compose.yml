@@ -12,9 +12,34 @@ services:
     image: trinodb/trino:${TRINO_VERSION:-476}
     ports:
       - "8080:8080"
+    environment:
+      # Read by trino/catalog/warehouse.properties as ${ENV:WAREHOUSE_DB_PASSWORD}.
+      WAREHOUSE_DB_PASSWORD: ${WAREHOUSE_DB_PASSWORD}
     volumes:
       # Catalogs = the warehouse connections Trino exposes (tpch is a built-in sample).
       - ./trino/catalog:/etc/trino/catalog:ro
+    depends_on:
+      warehouse:
+        condition: service_healthy
+
+  # Sample star schema (stand-in for the bank's warehouse). Trino reads it as
+  # catalog "warehouse"; connect DBeaver to localhost:5433 to build/inspect it.
+  # SQL in ./warehouse/init runs once, when the volume is first created.
+  warehouse:
+    image: postgres:16
+    ports:
+      - "5433:5432"
+    environment:
+      POSTGRES_DB: warehouse
+      POSTGRES_USER: warehouse
+      POSTGRES_PASSWORD: ${WAREHOUSE_DB_PASSWORD}
+    volumes:
+      - warehouse-data:/var/lib/postgresql/data
+      - ./warehouse/init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U warehouse -d warehouse"]
+      interval: 5s
+      retries: 20
 
   superset-db:
     image: postgres:16
@@ -62,7 +87,7 @@ services:
       SUPERSET_USERNAME: ${SUPERSET_ADMIN_USERNAME}
       SUPERSET_PASSWORD: ${SUPERSET_ADMIN_PASSWORD}
       # Values substituted into ${...} placeholders inside the YAML files:
-      TRINO_URI: trino://superset@trino:8080/tpch
+      TRINO_URI: trino://superset@trino:8080/warehouse
       GIT_REPO_URL: ${GIT_REPO_URL:-}
     volumes:
       - ./semantic:/semantic:ro
@@ -71,7 +96,8 @@ services:
       superset:
         condition: service_healthy
       trino:
-        condition: service_started
+        condition: service_healthy
 
 volumes:
   superset-db-data:
+  warehouse-data:

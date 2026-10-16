@@ -1,0 +1,56 @@
+# =============================================================================
+# SIMPLE example - Physical dataset: reads one warehouse table as it is.
+# No SQL, no joins. Superset generates SELECT ... FROM warehouse.mart.fact_transaction
+# and adds the metrics and GROUP BY that each chart asks for.
+# =============================================================================
+
+table_name: fact_transaction        # Real table name in the warehouse; also the dataset name in Superset
+catalog: warehouse                  # Trino catalog (trino/catalog/warehouse.properties) = "go to the warehouse Postgres"
+schema: mart                        # Schema that holds the table inside Postgres
+sql: null                           # null = physical dataset (a real table). Writing SQL here makes it a virtual dataset
+description: Raw transactions fact table, one row per transaction.   # Shown in Superset as the dataset description
+cache_timeout: null                 # null = use Superset's default cache timeout
+filter_select_enabled: true         # Dashboard filters show a dropdown of the column's values
+
+uuid: b8e6d576-e11f-473d-ad19-2cc8bd89a1ab           # Permanent identity of the dataset. Never change it: a new uuid = a duplicate dataset
+database_uuid: c558dd1e-a16c-4438-8dda-1e86d43a733c  # Links the dataset to the connection in semantic/databases/Trino.yaml
+is_managed_externally: true         # Marks the dataset as owned by Git, not the UI (UI edits are overwritten on the next sync)
+external_url: ${GIT_REPO_URL:-}     # Link to this file in Git; sync.py fills it from the environment (empty if unset)
+version: 1.0.0                      # Superset import format version; leave as is
+
+# -----------------------------------------------------------------------------
+# metrics = the core of the semantic layer: one agreed definition per business number.
+# Charts pick a metric by name, so every chart computes it the same way.
+# -----------------------------------------------------------------------------
+metrics:
+  - metric_name: total_amount       # Technical name: snake_case (checked by sync.py). Never rename once charts use it
+    verbose_name: Total Amount      # Label business users see in Superset
+    expression: SUM(amount)         # SQL aggregate in Trino dialect, placed in the SELECT as is
+    description: Sum of all transaction amounts in EGP, including reversed ones.   # Required (sync.py rejects metrics without one)
+    d3format: ",.2f"                # Display format: thousands separator + 2 decimals (1,234.56)
+
+  - metric_name: transaction_count
+    verbose_name: Transactions
+    expression: COUNT(*)            # Rows = transactions, because the grain is one row per transaction
+    description: Number of transactions.
+    d3format: ",d"                  # Integer with thousands separator (20,000)
+
+# -----------------------------------------------------------------------------
+# columns = what Superset knows about the table's columns.
+#   groupby: true    -> usable as a dimension (group by / x-axis / series) in charts
+#   filterable: true -> usable in filters
+# Measures (amount, fee_amount) are groupby: false: you aggregate them, not group by them.
+# The sync smoke test selects all of these columns through Trino, so a column that
+# does not exist in the table makes the sync fail before anyone sees a broken chart.
+# -----------------------------------------------------------------------------
+columns:
+  - {column_name: transaction_id,   type: BIGINT,        groupby: false, filterable: true}                                    # Primary key, not a dimension
+  - {column_name: date_key,         type: INTEGER,       groupby: true,  filterable: true, verbose_name: Date Key}            # yyyymmdd, foreign key to dim_date
+  - {column_name: customer_key,     type: INTEGER,       groupby: false, filterable: true}                                    # Foreign key to dim_customer
+  - {column_name: branch_key,       type: INTEGER,       groupby: true,  filterable: true, verbose_name: Branch Key}          # Foreign key to dim_branch
+  - {column_name: product_key,      type: INTEGER,       groupby: true,  filterable: true, verbose_name: Product Key}         # Foreign key to dim_product
+  - {column_name: channel,          type: VARCHAR,       groupby: true,  filterable: true, verbose_name: Channel}             # Branch / ATM / Mobile / Internet
+  - {column_name: transaction_type, type: VARCHAR,       groupby: true,  filterable: true, verbose_name: Transaction Type}    # Deposit / Withdrawal / Transfer / Payment
+  - {column_name: amount,           type: "DECIMAL(18,2)", groupby: false, filterable: true, verbose_name: Amount (EGP)}      # Measure, aggregated inside metrics. Quoted: inside {...} a bare comma splits the value
+  - {column_name: fee_amount,       type: "DECIMAL(18,2)", groupby: false, filterable: true, verbose_name: Fee (EGP)}         # Measure
+  - {column_name: is_reversed,      type: BOOLEAN,       groupby: true,  filterable: true, verbose_name: Reversed}            # true = transaction was reversed
