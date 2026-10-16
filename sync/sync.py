@@ -4,7 +4,8 @@
 Steps:
   1. Render  - fill ${VAR} / ${VAR:-default} placeholders from the environment.
   2. Validate - YAML parses, uuids unique, metric names valid, references resolve.
-  3. Import  - zip the folder and POST it to /api/v1/dataset/import/ (overwrite=true).
+  3. Import  - POST databases/ to /api/v1/database/import/, then the whole folder to
+               /api/v1/dataset/import/ (both overwrite=true).
   4. Smoke test (optional) - run every metric once through /api/v1/chart/data.
 
 Usage:
@@ -110,7 +111,7 @@ def validate(files: dict[str, str]) -> list[dict]:
         if d.get("main_dttm_col") and d["main_dttm_col"] not in cols:
             errors.append(f"{rel}: main_dttm_col '{d['main_dttm_col']}' is not in columns")
         datasets.append({"file": rel, "table_name": d.get("table_name"), "uuid": uid,
-                         "metrics": sorted(names)})
+                         "metrics": sorted(names), "columns": sorted(c for c in cols if c)})
 
     if errors:
         raise ValueError("validation failed:\n  - " + "\n  - ".join(errors))
@@ -123,6 +124,14 @@ def make_zip(files: dict[str, str]) -> bytes:
         for rel, text in files.items():
             z.writestr(f"semantic_layer/{rel}", text)
     return buf.getvalue()
+
+
+def database_files(files: dict[str, str]) -> dict[str, str]:
+    """Databases-only bundle. Superset's dataset import never updates an existing
+    database, so connections are imported on their own with overwrite."""
+    out = {rel: t for rel, t in files.items() if rel.startswith("databases/")}
+    out["metadata.yaml"] = "version: 1.0.0\ntype: Database\ntimestamp: '2026-01-01T00:00:00+00:00'\n"
+    return out
 
 
 # ---------------------------------------------------------------- Superset API
@@ -153,15 +162,16 @@ class Superset:
         r.raise_for_status()
         self.s.headers.update({"X-CSRFToken": r.json()["result"], "Referer": self.url})
 
-    def import_bundle(self, zip_bytes: bytes) -> None:
+    def import_bundle(self, zip_bytes: bytes, kind: str) -> None:
+        """kind: 'database' or 'dataset'."""
         data = {"overwrite": "true"}
         if os.environ.get("SUPERSET_DB_PASSWORDS"):
             data["passwords"] = os.environ["SUPERSET_DB_PASSWORDS"]
-        r = self.s.post(f"{self.url}/api/v1/dataset/import/",
+        r = self.s.post(f"{self.url}/api/v1/{kind}/import/",
                         files={"formData": ("semantic_layer.zip", zip_bytes, "application/zip")},
                         data=data, timeout=120)
         if not r.ok:
-            raise RuntimeError(f"import failed ({r.status_code}): {r.text[:2000]}")
+            raise RuntimeError(f"{kind} import failed ({r.status_code}): {r.text[:2000]}")
 
     def dataset_id(self, table_name: str, uuid: str) -> int:
         q = f"(filters:!((col:table_name,opr:eq,value:'{table_name}')),page_size:100)"
@@ -174,8 +184,14 @@ class Superset:
         raise RuntimeError(f"dataset {table_name} ({uuid}) not found after import")
 
     def run_metric(self, ds_id: int, metric: str) -> None:
-        body = {"datasource": {"id": ds_id, "type": "table"},
-                "queries": [{"metrics": [metric], "columns": [], "row_limit": 1}],
+        self._query(ds_id, {"metrics": [metric], "columns": [], "row_limit": 1})
+
+    def run_columns(self, ds_id: int, columns: list[str]) -> None:
+        """SELECT <all declared columns> LIMIT 1: catches columns missing in the table."""
+        self._query(ds_id, {"metrics": [], "columns": columns, "row_limit": 1})
+
+    def _query(self, ds_id: int, query: dict) -> None:
+        body = {"datasource": {"id": ds_id, "type": "table"}, "queries": [query],
                 "result_format": "json", "result_type": "full", "force": True}
         r = self.s.post(f"{self.url}/api/v1/chart/data", json=body, timeout=120)
         if not r.ok:
@@ -198,26 +214,33 @@ def sync_once(root: Path, args) -> None:
                    os.environ["SUPERSET_PASSWORD"], os.environ.get("SUPERSET_AUTH_PROVIDER", "db"))
     sup.wait_until_up()
     sup.login()
-    sup.import_bundle(make_zip(files))
-    log("imported into Superset")
+    sup.import_bundle(make_zip(database_files(files)), "database")
+    sup.import_bundle(make_zip(files), "dataset")
+    log("imported into Superset (databases, then datasets)")
 
     if args.smoke_test:
         failures = []
+
+        def attempt(label: str, fn) -> None:
+            for i in range(3):
+                try:
+                    fn()
+                    return
+                except Exception as e:  # noqa: BLE001
+                    if i == 2:
+                        failures.append(f"{label}: {e}")
+                    else:
+                        time.sleep(10)
+
         for d in datasets:
             ds_id = sup.dataset_id(d["table_name"], d["uuid"])
+            if d["columns"]:
+                attempt(f"{d['table_name']} columns", lambda: sup.run_columns(ds_id, d["columns"]))
             for m in d["metrics"]:
-                for attempt in range(3):
-                    try:
-                        sup.run_metric(ds_id, m)
-                        break
-                    except Exception as e:  # noqa: BLE001
-                        if attempt == 2:
-                            failures.append(f"{d['table_name']}.{m}: {e}")
-                        else:
-                            time.sleep(10)
+                attempt(f"{d['table_name']}.{m}", lambda m=m: sup.run_metric(ds_id, m))
         if failures:
             raise RuntimeError("smoke test failed:\n  - " + "\n  - ".join(failures))
-        log(f"smoke test passed: {n_metrics} metrics ran on the warehouse")
+        log(f"smoke test passed: columns + {n_metrics} metrics ran on the warehouse")
 
 
 def fingerprint(root: Path) -> str:

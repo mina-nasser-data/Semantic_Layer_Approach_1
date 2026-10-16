@@ -12,5 +12,6 @@ allow_dml: false
 allow_file_upload: false
 extra:
   allows_virtual_table_explore: true
+  allow_multi_catalog: true      # one connection can serve every Trino catalog
 uuid: c558dd1e-a16c-4438-8dda-1e86d43a733c
 version: 1.0.0

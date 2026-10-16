@@ -17,7 +17,7 @@ semantic/*.yaml ──(git push)──► CI: validate → staging + smoke test 
 | `semantic/metadata.yaml` | Bundle header Superset expects (`type: SqlaTable`) |
 | `semantic/databases/*.yaml` | Warehouse connection; URI comes from `${TRINO_URI}` |
 | `semantic/datasets/<db>/*.yaml` | One file per dataset: table or SQL, columns, **metrics** |
-| `sync/sync.py` | Render `${VAR}` → validate → zip → `POST /api/v1/dataset/import/` → smoke test |
+| `sync/sync.py` | Render `${VAR}` → validate → import databases, then datasets (overwrite) → smoke test (columns + every metric) |
 | `superset/` | Superset image + Trino driver, config, bootstrap |
 | `trino/catalog/` | Trino catalogs (sample `tpch`; add your real sources here) |
 | `.gitlab-ci.yml` | validate on MR, deploy to staging on MR, deploy to prod on merge |
@@ -53,6 +53,8 @@ copy `datasets/...yaml` into `semantic/datasets/`, keep its `uuid`, point
 - **Deleting a metric in Git deletes it in Superset** (import runs with overwrite +
   sync). Check no chart uses it first.
 - **Datasets removed from Git are not deleted** from Superset; remove them manually.
+- **Database files are imported separately with overwrite**, because Superset's dataset
+  import never updates an existing connection. Changing `${TRINO_URI}` takes effect on the next sync.
 - **Credentials never go in Git**: use `${VAR}` placeholders and CI variables, or
   `SUPERSET_DB_PASSWORDS`.
 - **Lock editing with permissions.** `is_managed_externally: true` marks the dataset as
