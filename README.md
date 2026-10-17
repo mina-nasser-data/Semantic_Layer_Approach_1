@@ -23,34 +23,27 @@ Everything runs in one `docker compose` stack. Both approaches share Superset,
 Trino and the warehouse; they differ in where the metric definitions live and
 how Superset gets them.
 
-```mermaid
-flowchart LR
-    subgraph repo["Git repository"]
-        sem["semantic/<br/>datasets + metrics YAML"]
-        cubemodel["cube/model/<br/>cubes + views YAML"]
-    end
-
-    subgraph stack["docker compose stack"]
-        sync["semantic-sync<br/>sync.py --watch"]
-        superset["Superset :8088"]
-        supersetdb[("superset-db<br/>Postgres<br/>(Superset metadata)")]
-        cube["Cube :4000<br/>SQL API :15432"]
-        trino["Trino :8080<br/>catalogs: warehouse, tpch"]
-        warehouse[("warehouse<br/>Postgres :5433<br/>star schema mart.*")]
-    end
-
-    users["Business users<br/>(charts, dashboards, SQL Lab)"]
-
-    sem -- "read-only mount" --> sync
-    sync -- "Approach 1:<br/>REST API import" --> superset
-    cubemodel -- "read-only mount" --> cube
-    superset -- "Approach 2:<br/>Postgres protocol" --> cube
-    superset -- "Approach 1:<br/>Trino driver" --> trino
-    cube -- "generated SQL" --> trino
-    trino -- "postgresql connector" --> warehouse
-    superset --- supersetdb
-    users --> superset
 ```
+       Approach 1: Native                         Approach 2: Cube (external)
+
+          Business user                                  Business user
+                │                                              │
+                ▼                                              ▼
+semantic/ ──► Superset                                     Superset
+(YAML)  sync  holds the metrics                            asks Cube for measures by name
+                │                                              │  Postgres protocol :15432
+                │                                              ▼
+                │                              cube/model/ ──► Cube
+                │                              (YAML)          holds the metrics, writes the joins
+                ▼                                              ▼
+              Trino                                          Trino
+                │                                              │
+                ▼                                              ▼
+            Warehouse                                      Warehouse
+```
+
+The only difference is **where the semantic layer sits**: inside Superset
+(Approach 1) or in Cube, between Superset and Trino (Approach 2).
 
 | Component | Role | Approach |
 |---|---|---|
@@ -121,51 +114,22 @@ Locally, edit any file in `semantic/`, save, and within a few seconds the sync
 container re-imports it. Datasets appear in Superset under **Datasets** with
 their metrics, ready for charts.
 
-### Workflow: change a metric
+### Flow
 
-```mermaid
-flowchart TD
-    edit["Edit / add YAML in semantic/datasets/"] --> local{"Where?"}
-
-    local -- "local" --> watch["semantic-sync detects the change<br/>(polls every 5 s)"]
-    watch --> s1
-
-    local -- "Git" --> mr["Commit + merge request"]
-    mr --> ci1["CI: validate<br/>(sync.py --validate-only)"]
-    ci1 --> ci2["CI: deploy to staging Superset"]
-    ci2 --> s1
-    ci2 --> merge["Merge to main"]
-    merge --> ci3["CI: deploy to prod Superset"]
-    ci3 --> s1
-
-    subgraph steps["sync.py, every run"]
-        s1["1. Render ${VAR} placeholders"] --> s2["2. Validate: YAML, uuids, metric names,<br/>descriptions, references"]
-        s2 --> s3["3. Import databases/ (overwrite)"]
-        s3 --> s4["4. Import datasets/ + metrics (overwrite)"]
-        s4 --> s5["5. Smoke test: every column + every metric<br/>runs once on the warehouse"]
-    end
-
-    s2 -- "invalid" --> fail["Stop: nothing imported,<br/>error in logs / CI job"]
-    s5 -- "a metric fails" --> fail
-    s5 -- "all pass" --> ok["Metrics live in Superset"]
 ```
-
-### Workflow: what happens when a chart runs
-
-```mermaid
-sequenceDiagram
-    actor U as Business user
-    participant S as Superset
-    participant T as Trino
-    participant W as Warehouse
-
-    U->>S: Chart: metric net_amount by region, last quarter
-    Note over S: Looks up the metric in the dataset<br/>(stored by sync.py) and inlines its SQL:<br/>SUM(CASE WHEN NOT is_reversed THEN amount ELSE 0 END)
-    S->>T: SELECT region, SUM(...) FROM (dataset SQL) WHERE ... GROUP BY region
-    T->>W: Pushes the query down to Postgres
-    W-->>T: Rows
-    T-->>S: Result
-    S-->>U: Chart
+  semantic/datasets/*.yaml        1. Define datasets and metrics as YAML in Git
+            │
+            ▼
+  sync.py                         2. Render ${VAR} → validate → import → smoke test
+            │  REST API              (locally on every save, in CI on every merge)
+            ▼
+  Superset datasets + metrics     3. The semantic layer lives here
+            │  metric SQL inlined    A chart picks "net_amount"; Superset pastes its SQL
+            ▼                        SUM(CASE WHEN NOT is_reversed THEN amount ELSE 0 END)
+  Trino                           4. Runs the query
+            │
+            ▼
+  Warehouse (mart.*)              5. Data
 ```
 
 The metric's SQL is stored inside Superset, so the definition can only be used
@@ -215,46 +179,30 @@ like a Postgres database whose tables are the Cube views.
 This approach is deliberately **separate from `semantic/` and CI/CD**: nothing in
 `sync.py` or `.gitlab-ci.yml` touches Cube.
 
-### Workflow: change a measure
+### Flow
 
-```mermaid
-flowchart TD
-    edit["Edit / add YAML in cube/model/cubes/<br/>(measure, dimension, join)"] --> view["Add the member to the view's includes<br/>in cube/model/views/"]
-    view --> restart["docker compose restart cube"]
-    restart --> compile{"Cube compiles the model"}
-    compile -- "error" --> logs["Error in docker compose logs cube<br/>and in the Playground"]
-    compile -- "ok" --> play["Check it in the Playground<br/>http://localhost:4000"]
-    play --> live["Superset sees it immediately<br/>(no import step)"]
-    live --> chart["Use it in SQL Lab or a chart:<br/>MEASURE(new_measure)"]
-
-    boot["Superset start: bootstrap.sh"] -.-> conn["Registers / updates the<br/>'Cube' database connection (CUBE_URI)"]
-    conn -.-> live
 ```
+  cube/model/cubes/*.yml          1. Define cubes (tables), joins and measures as YAML
+  cube/model/views/*.yml             and the views clients may query
+            │  read when Cube starts (docker compose restart cube)
+            ▼
+  Cube                            2. The semantic layer lives here
+            ▲                        Turns "MEASURE(net_amount) by region" into Trino SQL,
+            │                        adding the joins and the measure formula
+            │  Postgres protocol :15432 ("Cube" connection, registered by bootstrap.sh)
+            │
+  Superset                        3. Asks Cube for measures by name; holds no formulas
+            ▲                        SELECT region, MEASURE(net_amount)
+            │                        FROM bank_transactions GROUP BY region
+  Business user (chart, SQL Lab)
 
-### Workflow: what happens when a chart runs
-
-```mermaid
-sequenceDiagram
-    actor U as Business user
-    participant S as Superset
-    participant C as Cube
-    participant T as Trino
-    participant W as Warehouse
-
-    U->>S: Chart: MEASURE(net_amount) by region, last quarter
-    S->>C: Postgres protocol (:15432)<br/>SELECT region, MEASURE(net_amount)<br/>FROM bank_transactions WHERE ... GROUP BY region
-    Note over C: Resolves the view to its cubes,<br/>adds the joins from the model<br/>(transactions → branches),<br/>expands net_amount to its formula
-    C->>T: Generated SQL on warehouse.mart.fact_transaction<br/>JOIN warehouse.mart.dim_branch ...
-    T->>W: Pushes the query down to Postgres
-    W-->>T: Rows
-    T-->>C: Result
-    C-->>S: Result (Postgres wire format)
-    S-->>U: Chart
+  Cube ──► Trino ──► Warehouse (mart.*)   4. Cube sends the generated SQL to Trino
 ```
 
 Superset never sees the formula or the joins; it only asks Cube for a measure
 by name. Any other client (another BI tool, a notebook, an application) asking
-for `net_amount` gets the same SQL and the same number.
+for `net_amount` gets the same SQL and the same number. Model changes are live
+after a Cube restart; there is no import step.
 
 ### The model
 
