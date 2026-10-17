@@ -69,9 +69,77 @@ The only difference is **where the semantic layer sits**: inside Superset
 | `trino/catalog/` | Trino catalogs: `warehouse` (sample star schema) and `tpch` (built-in sample) |
 | `warehouse/init/` | Sample banking star schema loaded into the `warehouse` Postgres |
 
+## Getting started: from clone to Superset
+
+You need **Git** and **Docker Desktop** (with Docker Compose), and these ports
+free: 8088, 8080, 4000, 5433, 15432.
+
+**1. Clone the project**
+
+```bash
+git clone <repo-url>
+cd Semantic_Layer_POC
+```
+
+**2. Create your `.env` from the example**
+
+```bash
+cp .env.example .env                 # PowerShell: Copy-Item .env.example .env
+```
+
+Open `.env` and replace every `change-me` with your own value (letters and digits
+only). To generate one: `python -c "import secrets; print(secrets.token_hex(32))"`.
+`.env` is in `.gitignore`; never commit it.
+
+**3. Start the stack**
+
+```bash
+docker compose up -d --build
+```
+
+The first run downloads and builds images, which takes a few minutes. The sample
+warehouse is created automatically on the first start.
+
+**4. Wait until the datasets are loaded**
+
+```bash
+docker compose logs -f semantic-sync
+```
+
+Wait for these lines, then press `Ctrl+C`:
+
+```
+[sync] valid: ... datasets, ... metrics
+[sync] imported into Superset (databases, then datasets)
+[sync] smoke test passed: ...
+```
+
+**5. Open Superset**
+
+Go to http://localhost:8088 and log in with `SUPERSET_ADMIN_USERNAME` /
+`SUPERSET_ADMIN_PASSWORD` from your `.env`. Open **Datasets**: you see one dataset
+per file in `semantic/datasets/`, each with its metrics. The **Cube** connection
+(Approach 2) is under **Settings → Database Connections**.
+
+**6. Add a new dataset (new YAML file)**
+
+Every new YAML file needs its **own new `uuid`**. Never copy the `uuid` from another
+file: two files with the same uuid fail validation, and an invalid uuid fails the
+import, which blocks the whole sync. Generate one with:
+
+```bash
+python -c "import uuid; print(uuid.uuid4())"
+```
+
+Put it in the file's `uuid:` line, give the dataset its own `table_name`, save the
+file in `semantic/datasets/Trino/`, and check `docker compose logs semantic-sync`.
+Once a dataset is deployed, never change its uuid.
+
+To stop: `docker compose down` (data is kept). To start again: `docker compose up -d`.
+
 ## Run locally
 
-Create `.env` in the repo root (never commit it):
+Variables in `.env` (see `.env.example`):
 
 | Variable | Used by |
 |---|---|
@@ -156,7 +224,12 @@ copy `datasets/...yaml` into `semantic/datasets/`, keep its `uuid`, point
 - **Don't rename metrics.** Charts reference metrics by name. Add a new one instead.
 - **Deleting a metric in Git deletes it in Superset** (import runs with overwrite +
   sync). Check no chart uses it first.
-- **Datasets removed from Git are not deleted** from Superset; remove them manually.
+- **Deleting a dataset file deletes the dataset in Superset** on the next sync. Superset's
+  import itself never deletes, so `sync.py` removes Git-managed datasets (`is_managed_externally`)
+  on the bundle's databases whose file is gone. It never deletes datasets built in the UI, and
+  skips (with a `WARNING` in the log) any dataset that charts still use: move those charts first.
+- **Only files inside `semantic/` are synced.** Copies kept elsewhere (e.g. drafts outside the
+  repo) are not seen; edit the file in `semantic/datasets/`.
 - **Database files are imported separately with overwrite**, because Superset's dataset
   import never updates an existing connection. Changing `${TRINO_URI}` takes effect on the next sync.
 - **Credentials never go in Git**: use `${VAR}` placeholders and CI variables, or
@@ -295,7 +368,8 @@ view's `includes` list.
   `branch_monthly`, ...). Changing it means editing every copy.
 - **Metrics cannot reference other metrics**; each is a standalone SQL expression.
 - **No acceleration layer.** Only Superset's result cache; heavy queries always hit Trino.
-- **Clean-up is manual.** Datasets removed from Git stay in Superset.
+- **Deletes depend on the sync script.** Superset's import never deletes; `sync.py` adds
+  that step, and a dataset still used by charts is kept until the charts are moved.
 
 ### Approach 2: External semantic layer (Cube)
 

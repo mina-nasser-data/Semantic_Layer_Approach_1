@@ -6,6 +6,7 @@ Steps:
   2. Validate - YAML parses, uuids unique, metric names valid, references resolve.
   3. Import  - POST databases/ to /api/v1/database/import/, then the whole folder to
                /api/v1/dataset/import/ (both overwrite=true).
+     Then delete Git-managed datasets whose file was removed (unless charts use them).
   4. Smoke test (optional) - run every metric once through /api/v1/chart/data.
 
 Usage:
@@ -183,6 +184,36 @@ class Superset:
                 return row["id"]
         raise RuntimeError(f"dataset {table_name} ({uuid}) not found after import")
 
+    def prune_datasets(self, keep: set[str], db_uuids: set[str]) -> None:
+        """Delete Git-managed datasets whose YAML file was removed. Superset's import only
+        creates and updates, so without this a deleted file stays in Superset. Datasets made
+        in the UI (not is_managed_externally) and datasets used by charts are never deleted."""
+        page = 0
+        rows = []
+        while True:
+            r = self.s.get(f"{self.url}/api/v1/dataset/",
+                           params={"q": f"(page:{page},page_size:100)"}, timeout=30)
+            r.raise_for_status()
+            batch = r.json()["result"]
+            rows += batch
+            if len(batch) < 100:
+                break
+            page += 1
+        for row in rows:
+            if str(row["database"].get("uuid")) not in db_uuids:
+                continue
+            detail = self.s.get(f"{self.url}/api/v1/dataset/{row['id']}", timeout=30).json()["result"]
+            if not detail.get("is_managed_externally") or str(detail.get("uuid")) in keep:
+                continue
+            r = self.s.get(f"{self.url}/api/v1/dataset/{row['id']}/related_objects", timeout=30)
+            r.raise_for_status()
+            charts = r.json()["charts"]["count"]
+            if charts:
+                log(f"WARNING {row['table_name']}: file removed but {charts} chart(s) use it, not deleted")
+                continue
+            self.s.delete(f"{self.url}/api/v1/dataset/{row['id']}", timeout=30).raise_for_status()
+            log(f"deleted {row['table_name']} from Superset: its file was removed")
+
     def run_metric(self, ds_id: int, metric: str) -> None:
         self._query(ds_id, {"metrics": [metric], "columns": [], "row_limit": 1})
 
@@ -217,6 +248,8 @@ def sync_once(root: Path, args) -> None:
     sup.import_bundle(make_zip(database_files(files)), "database")
     sup.import_bundle(make_zip(files), "dataset")
     log("imported into Superset (databases, then datasets)")
+    db_uuids = {str(yaml.safe_load(t).get("uuid")) for rel, t in files.items() if rel.startswith("databases/")}
+    sup.prune_datasets({d["uuid"] for d in datasets}, db_uuids)
 
     if args.smoke_test:
         failures = []
