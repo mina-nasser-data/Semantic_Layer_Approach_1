@@ -1,0 +1,27 @@
+# Branch dimension (warehouse.mart.dim_branch). One row per branch.
+cubes:
+  - name: branches
+    sql_table: warehouse.mart.dim_branch
+    public: false
+
+    dimensions:
+      - name: branch_key
+        sql: branch_key
+        type: number
+        primary_key: true
+
+      - name: branch_code
+        sql: branch_code
+        type: string
+
+      - name: branch_name
+        sql: branch_name
+        type: string
+
+      - name: city
+        sql: city
+        type: string
+
+      - name: region
+        sql: region
+        type: string

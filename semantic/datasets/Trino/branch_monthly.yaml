@@ -1,0 +1,108 @@
+# =============================================================================
+# Branch performance by month. Grain = one row per branch per month.
+#
+# Transactions are pre-aggregated per branch and month, so this dataset stays
+# small and fast. Metrics are built from SUMs of the pre-aggregated columns
+# (never AVG of averages), so they stay correct at any level: branch, city,
+# region, month, quarter or year.
+#
+# Checked in Trino: 168 rows = 8 branches x 21 months, COUNT(DISTINCT branch, month)
+# = 168, SUM(txn_count) = 20000 = rows in fact_transaction.
+#
+# Use this dataset for cash flow, digital adoption and fee questions by branch.
+# For single transactions, use the transactions dataset.
+# =============================================================================
+table_name: branch_monthly
+catalog: warehouse
+schema: mart
+sql: |-
+  SELECT CAST(date_trunc('month', d.full_date) AS DATE) AS month_start,
+         d.year, d.quarter, d.month, d.month_name,
+         b.branch_code, b.branch_name, b.city, b.region,
+         COUNT(*)                                                               AS txn_count,
+         SUM(CASE WHEN f.channel IN ('Mobile', 'Internet') THEN 1 ELSE 0 END)   AS digital_txn_count,
+         SUM(CASE WHEN f.is_reversed THEN 1 ELSE 0 END)                         AS reversed_count,
+         SUM(CASE WHEN NOT f.is_reversed AND f.transaction_type = 'Deposit'
+                  THEN f.amount ELSE 0 END)                                     AS deposit_amount,
+         SUM(CASE WHEN NOT f.is_reversed AND f.transaction_type = 'Withdrawal'
+                  THEN f.amount ELSE 0 END)                                     AS withdrawal_amount,
+         SUM(CASE WHEN NOT f.is_reversed THEN f.fee_amount ELSE 0 END)          AS net_fees
+  FROM warehouse.mart.fact_transaction f
+  JOIN warehouse.mart.dim_date   d ON f.date_key   = d.date_key
+  JOIN warehouse.mart.dim_branch b ON f.branch_key = b.branch_key
+  GROUP BY CAST(date_trunc('month', d.full_date) AS DATE), d.year, d.quarter, d.month, d.month_name,
+           b.branch_code, b.branch_name, b.city, b.region
+main_dttm_col: month_start          # Time filters and time grain work at month level (or coarser)
+description: Monthly cash flow, digital adoption and fees per branch. Grain = branch x month.
+cache_timeout: null
+filter_select_enabled: true
+uuid: efb3a139-8b48-454c-955d-fe96279ea004        # never change once deployed
+database_uuid: c558dd1e-a16c-4438-8dda-1e86d43a733c
+is_managed_externally: true
+external_url: ${GIT_REPO_URL:-}
+version: 1.0.0
+
+metrics:
+  - metric_name: deposit_inflow
+    verbose_name: Deposit Inflow
+    expression: SUM(deposit_amount)
+    description: Total deposited amount (EGP), excluding reversed transactions.
+    d3format: ",.2f"
+
+  - metric_name: withdrawal_outflow
+    verbose_name: Withdrawal Outflow
+    expression: SUM(withdrawal_amount)
+    description: Total withdrawn amount (EGP), excluding reversed transactions.
+    d3format: ",.2f"
+
+  - metric_name: net_cash_flow
+    verbose_name: Net Cash Flow
+    # Positive = branch collected more than it paid out. Transfers and payments are not included.
+    expression: SUM(deposit_amount) - SUM(withdrawal_amount)
+    description: Deposits minus withdrawals (EGP), excluding reversed transactions.
+    d3format: ",.2f"
+
+  - metric_name: digital_share
+    verbose_name: Digital Share
+    # CAST avoids integer division in Trino (1/3 = 0).
+    expression: CAST(SUM(digital_txn_count) AS DOUBLE) / NULLIF(SUM(txn_count), 0)
+    description: Share of transactions made through Mobile or Internet channels.
+    d3format: ".1%"
+
+  - metric_name: avg_fee_per_txn
+    verbose_name: Average Fee per Transaction
+    # Reversed transactions are excluded from both fees and the transaction count.
+    expression: SUM(net_fees) / NULLIF(SUM(txn_count) - SUM(reversed_count), 0)
+    description: Fees charged (EGP) divided by the number of non-reversed transactions.
+    d3format: ",.2f"
+
+  - metric_name: active_branches
+    verbose_name: Active Branches
+    # DISTINCT is required: one branch has one row per month.
+    expression: COUNT(DISTINCT branch_code)
+    description: Distinct branches with at least one transaction.
+    d3format: ",d"
+
+  - metric_name: avg_monthly_txns_per_branch
+    verbose_name: Avg Monthly Transactions per Branch
+    # One row = one branch in one month, so COUNT(*) = number of branch-months.
+    expression: CAST(SUM(txn_count) AS DOUBLE) / NULLIF(COUNT(*), 0)
+    description: Average number of transactions a branch handles in one month.
+    d3format: ",.1f"
+
+columns:
+  - {column_name: month_start,       type: DATE,            groupby: true,  filterable: true, is_dttm: true, verbose_name: Month}
+  - {column_name: year,              type: INTEGER,         groupby: true,  filterable: true, verbose_name: Year}
+  - {column_name: quarter,           type: INTEGER,         groupby: true,  filterable: true, verbose_name: Quarter}
+  - {column_name: month,             type: INTEGER,         groupby: true,  filterable: true, verbose_name: Month Number}
+  - {column_name: month_name,        type: VARCHAR,         groupby: true,  filterable: true, verbose_name: Month Name}
+  - {column_name: branch_code,       type: VARCHAR,         groupby: true,  filterable: true, verbose_name: Branch Code}
+  - {column_name: branch_name,       type: VARCHAR,         groupby: true,  filterable: true, verbose_name: Branch}
+  - {column_name: city,              type: VARCHAR,         groupby: true,  filterable: true, verbose_name: City}
+  - {column_name: region,            type: VARCHAR,         groupby: true,  filterable: true, verbose_name: Region}
+  - {column_name: txn_count,         type: BIGINT,          groupby: false, filterable: true, verbose_name: Transactions}
+  - {column_name: digital_txn_count, type: BIGINT,          groupby: false, filterable: true, verbose_name: Digital Transactions}
+  - {column_name: reversed_count,    type: BIGINT,          groupby: false, filterable: true, verbose_name: Reversed Transactions}
+  - {column_name: deposit_amount,    type: "DECIMAL(38,2)", groupby: false, filterable: true, verbose_name: Deposits (EGP)}
+  - {column_name: withdrawal_amount, type: "DECIMAL(38,2)", groupby: false, filterable: true, verbose_name: Withdrawals (EGP)}
+  - {column_name: net_fees,          type: "DECIMAL(38,2)", groupby: false, filterable: true, verbose_name: Net Fees (EGP)}

@@ -1,0 +1,38 @@
+# Customer dimension (warehouse.mart.dim_customer). One row per customer.
+cubes:
+  - name: customers
+    sql_table: warehouse.mart.dim_customer
+    public: false
+
+    dimensions:
+      - name: customer_key
+        sql: customer_key
+        type: number
+        primary_key: true
+
+      - name: customer_id
+        sql: customer_id
+        type: string
+
+      - name: customer_name
+        sql: customer_name
+        type: string
+
+      - name: segment
+        sql: segment
+        type: string
+        description: Retail / SME / Corporate.
+
+      - name: governorate
+        sql: governorate
+        type: string
+
+      - name: join_date
+        sql: join_date
+        type: time
+
+    measures:
+      - name: customer_count
+        title: Customers
+        type: count
+        description: Number of customers, with or without transactions.

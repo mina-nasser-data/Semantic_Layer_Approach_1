@@ -1,0 +1,117 @@
+# Fact cube: one row per transaction (warehouse.mart.fact_transaction).
+# Measures are defined once here; Superset reads them through the Cube SQL API
+# with MEASURE(<name>), so the business logic lives only in this file.
+cubes:
+  - name: transactions
+    sql_table: warehouse.mart.fact_transaction
+    description: Bank transactions. Grain = transaction.
+    public: false     # Hidden from the SQL API: Superset uses the bank_transactions view instead
+
+    # Every join is N:1 from the fact, so measures never fan out (no double counting).
+    joins:
+      - name: dates
+        sql: "{CUBE}.date_key = {dates}.date_key"
+        relationship: many_to_one
+      - name: customers
+        sql: "{CUBE}.customer_key = {customers}.customer_key"
+        relationship: many_to_one
+      - name: branches
+        sql: "{CUBE}.branch_key = {branches}.branch_key"
+        relationship: many_to_one
+      - name: products
+        sql: "{CUBE}.product_key = {products}.product_key"
+        relationship: many_to_one
+
+    dimensions:
+      - name: transaction_id
+        sql: transaction_id
+        type: number
+        primary_key: true
+        public: true
+
+      - name: channel
+        sql: channel
+        type: string
+        description: Branch / ATM / Mobile / Internet.
+
+      - name: transaction_type
+        sql: transaction_type
+        type: string
+        description: Deposit / Withdrawal / Transfer / Payment.
+
+      - name: is_reversed
+        sql: is_reversed
+        type: boolean
+
+      - name: amount
+        sql: amount
+        type: number
+        description: Transaction amount (EGP).
+
+    measures:
+      - name: transaction_count
+        title: Transactions
+        type: count
+        description: Number of transactions, including reversed ones.
+
+      - name: net_amount
+        title: Net Amount
+        sql: "CASE WHEN NOT {CUBE}.is_reversed THEN {CUBE}.amount ELSE 0 END"
+        type: sum
+        format: currency
+        description: Sum of transaction amounts (EGP), excluding reversed transactions.
+
+      - name: net_fees
+        title: Net Fees
+        sql: "CASE WHEN NOT {CUBE}.is_reversed THEN {CUBE}.fee_amount ELSE 0 END"
+        type: sum
+        format: currency
+        description: Fees charged (EGP), excluding reversed transactions.
+
+      # Helper counts used by the ratios below; hidden from Superset.
+      - name: non_reversed_count
+        type: count
+        filters:
+          - sql: "NOT {CUBE}.is_reversed"
+        public: false
+
+      - name: reversed_count
+        type: count
+        filters:
+          - sql: "{CUBE}.is_reversed"
+        public: false
+
+      - name: digital_count
+        type: count
+        filters:
+          - sql: "{CUBE}.channel IN ('Mobile', 'Internet')"
+        public: false
+
+      - name: avg_txn_amount
+        title: Average Transaction Amount
+        # Reversed transactions are excluded from numerator and denominator.
+        sql: "{net_amount} / NULLIF({non_reversed_count}, 0)"
+        type: number
+        format: currency
+        description: Net amount divided by the number of non-reversed transactions (EGP).
+
+      - name: reversal_rate
+        title: Reversal Rate
+        # CAST avoids integer division in Trino (1/3 = 0).
+        sql: "CAST({reversed_count} AS DOUBLE) / NULLIF({transaction_count}, 0)"
+        type: number
+        format: percent
+        description: Share of transactions that were reversed.
+
+      - name: digital_share
+        title: Digital Share
+        sql: "CAST({digital_count} AS DOUBLE) / NULLIF({transaction_count}, 0)"
+        type: number
+        format: percent
+        description: Share of transactions made through Mobile or Internet channels.
+
+      - name: active_customers
+        title: Active Customers
+        sql: customer_key
+        type: count_distinct
+        description: Distinct customers with at least one transaction.

@@ -1,0 +1,24 @@
+# Product dimension (warehouse.mart.dim_product). One row per product.
+cubes:
+  - name: products
+    sql_table: warehouse.mart.dim_product
+    public: false
+
+    dimensions:
+      - name: product_key
+        sql: product_key
+        type: number
+        primary_key: true
+
+      - name: product_code
+        sql: product_code
+        type: string
+
+      - name: product_name
+        sql: product_name
+        type: string
+
+      - name: category
+        sql: category
+        type: string
+        description: Account / Card / Loan.

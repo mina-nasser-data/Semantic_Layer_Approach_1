@@ -1,0 +1,52 @@
+# What Superset sees: one flat "table" (bank_transactions) with every dimension
+# of the star schema plus the transaction measures. Cube writes the joins itself,
+# following the join_path from the transactions cube.
+views:
+  - name: bank_transactions
+    description: Bank transactions with date, customer, branch and product. Grain = transaction.
+
+    cubes:
+      - join_path: transactions
+        includes:
+          - transaction_id
+          - channel
+          - transaction_type
+          - is_reversed
+          - amount
+          - transaction_count
+          - net_amount
+          - net_fees
+          - avg_txn_amount
+          - reversal_rate
+          - digital_share
+          - active_customers
+
+      - join_path: transactions.dates
+        includes:
+          - full_date
+          - year
+          - quarter
+          - month
+          - month_name
+          - day_name
+          - is_weekend
+
+      - join_path: transactions.customers
+        includes:
+          - customer_id
+          - customer_name
+          - segment
+          - governorate
+
+      - join_path: transactions.branches
+        includes:
+          - branch_code
+          - branch_name
+          - city
+          - region
+
+      - join_path: transactions.products
+        includes:
+          - product_code
+          - product_name
+          - category

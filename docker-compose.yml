@@ -66,6 +66,8 @@ services:
       DATABASE_URL: postgresql+psycopg2://superset:${SUPERSET_DB_PASSWORD}@superset-db:5432/superset
       ADMIN_USERNAME: ${SUPERSET_ADMIN_USERNAME}
       ADMIN_PASSWORD: ${SUPERSET_ADMIN_PASSWORD}
+      # bootstrap.sh registers this as the "Cube" database connection on every start.
+      CUBE_URI: postgresql://cube:${CUBE_SQL_PASSWORD}@cube:15432/cube
     volumes:
       - ./superset/superset_config.py:/app/pythonpath/superset_config.py:ro
     depends_on:
@@ -75,6 +77,37 @@ services:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8088/health')"]
       interval: 10s
       start_period: 60s
+      retries: 30
+
+  # External semantic layer, separate from ./semantic and CI: Cube reads its YAML
+  # model in ./cube/model and queries Trino. Superset reaches it through the "Cube"
+  # database connection (SQL API, Postgres protocol, port 15432) and sees every
+  # Cube view as a table. Playground: http://localhost:4000
+  cube:
+    image: cubejs/cube:${CUBE_VERSION:-v1.8.6}
+    ports:
+      - "4000:4000"     # REST API + Playground
+      - "15432:15432"   # SQL API (Postgres wire protocol)
+    environment:
+      CUBEJS_DB_TYPE: trino
+      CUBEJS_DB_HOST: trino
+      CUBEJS_DB_PORT: "8080"
+      CUBEJS_DB_USER: cube
+      CUBEJS_DB_PRESTO_CATALOG: warehouse   # tables in the model are fully qualified (warehouse.mart.x)
+      CUBEJS_DEV_MODE: "true"      # Playground + hot reload of the model. Turn off in production.
+      CUBEJS_API_SECRET: ${CUBE_API_SECRET}
+      CUBEJS_PG_SQL_PORT: "15432"
+      CUBEJS_SQL_USER: cube
+      CUBEJS_SQL_PASSWORD: ${CUBE_SQL_PASSWORD}
+    volumes:
+      - ./cube/model:/cube/conf/model:ro
+    depends_on:
+      trino:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "node", "-e", "require('http').get('http://localhost:4000/readyz', r => process.exit(r.statusCode === 200 ? 0 : 1)).on('error', () => process.exit(1))"]
+      interval: 10s
+      start_period: 30s
       retries: 30
 
   # Pushes the YAML in ./semantic into Superset through its REST API.
