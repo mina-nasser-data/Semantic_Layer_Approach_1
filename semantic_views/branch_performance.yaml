@@ -1,0 +1,55 @@
+# =============================================================================
+# Native semantic view (Superset 7 semantic layer "Trino").
+# One file = one semantic view. sync/semantic_views.py uploads it into Superset
+# through the API; Superset compiles each chart query to SQL and runs it on the
+# "Trino" database connection. Rename = new view, so keep `name` stable.
+# =============================================================================
+
+name: branch_performance              # View name in Superset (snake_case, unique)
+description: Transactions by branch, region and date. Grain = transaction.
+database: Trino                       # Superset database connection that runs the SQL
+
+source:
+  table: warehouse.mart.fact_transaction   # catalog.schema.table in Trino
+  alias: t                                 # Expressions below refer to t / the join aliases
+  joins:
+    - {table: warehouse.mart.dim_branch, alias: b, condition: "t.branch_key = b.branch_key"}
+    - {table: warehouse.mart.dim_date,   alias: d, condition: "t.date_key = d.date_key"}
+
+# What users group and filter by. type: string | number | integer | boolean | date | time
+# date/time dimensions get Day/Week/Month/Quarter/Year grains automatically.
+dimensions:
+  - {name: txn_date,         expression: d.full_date,        type: date,    label: Date}
+  - {name: channel,          expression: t.channel,          type: string,  label: Channel, description: Branch / ATM / Mobile / Internet.}
+  - {name: transaction_type, expression: t.transaction_type, type: string,  label: Transaction Type}
+  - {name: is_reversed,      expression: t.is_reversed,      type: boolean, label: Reversed}
+  - {name: branch_name,      expression: b.branch_name,      type: string,  label: Branch}
+  - {name: city,             expression: b.city,             type: string,  label: City}
+  - {name: region,           expression: b.region,           type: string,  label: Region}
+
+# One agreed definition per business number. description is required.
+metrics:
+  - name: transaction_count
+    label: Transactions
+    expression: COUNT(*)
+    type: integer
+    description: Number of transactions, including reversed ones.
+    d3format: ",d"
+
+  - name: net_amount
+    label: Net Amount (EGP)
+    expression: SUM(CASE WHEN NOT t.is_reversed THEN t.amount ELSE 0 END)
+    description: Sum of amounts of non-reversed transactions, in EGP.
+    d3format: ",.2f"
+
+  - name: net_fees
+    label: Net Fees (EGP)
+    expression: SUM(CASE WHEN NOT t.is_reversed THEN t.fee_amount ELSE 0 END)
+    description: Fees earned on non-reversed transactions, in EGP.
+    d3format: ",.2f"
+
+  - name: reversal_rate
+    label: Reversal Rate
+    expression: AVG(CASE WHEN t.is_reversed THEN 1.0 ELSE 0.0 END)
+    description: Share of transactions that were reversed.
+    d3format: ".2%"

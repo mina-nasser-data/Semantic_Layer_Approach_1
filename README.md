@@ -65,6 +65,9 @@ The only difference is **where the semantic layer sits**: inside Superset
 | `.gitlab-ci.yml` | Approach 1: validate on MR, deploy to staging on MR, deploy to prod on merge |
 | `cube/model/cubes/*.yml` | Approach 2: one cube per warehouse table: dimensions, measures, joins |
 | `cube/model/views/*.yml` | Approach 2: what Superset sees: flat "tables" assembled from the cubes |
+| `semantic_views/*.yaml` | Superset 7 semantic layer "Trino": one file per native semantic view (source, dimensions, metrics) |
+| `sync/semantic_views.py` | Superset 7: uploads `semantic_views/` into the "Trino" layer and registers every view of both layers (Trino, Cube) |
+| `superset/extensions/` | Superset 7 semantic layer providers: `native-semantic-layer` (YAML → SQL on Trino), `cube-semantic-layer` (Cube REST API) |
 | `superset/` | Superset image (Postgres + Trino drivers), config, bootstrap (also registers the Cube connection) |
 | `trino/catalog/` | Trino catalogs: `warehouse` (sample star schema) and `tpch` (built-in sample) |
 | `warehouse/init/` | Sample banking star schema loaded into the `warehouse` Postgres |
@@ -143,7 +146,7 @@ Variables in `.env` (see `.env.example`):
 
 | Variable | Used by |
 |---|---|
-| `SUPERSET_VERSION`, `TRINO_VERSION` | Image versions (defaults: `6.0.0`, `476`) |
+| `SUPERSET_VERSION`, `TRINO_VERSION` | Image versions (defaults: `7.0.0rc2`, `476`) |
 | `SUPERSET_SECRET_KEY`, `SUPERSET_DB_PASSWORD` | Superset |
 | `SUPERSET_ADMIN_USERNAME`, `SUPERSET_ADMIN_PASSWORD` | Superset admin; also used by `sync.py` |
 | `WAREHOUSE_DB_PASSWORD` | Sample warehouse Postgres, read by Trino |
@@ -341,6 +344,59 @@ Cube translates Superset's `DATE_TRUNC`, `WHERE` and `GROUP BY`.
 
 To expose a new measure or dimension to Superset, add it to the cube **and** to the
 view's `includes` list.
+
+---
+
+## Superset 7 semantic layers (semantic views)
+
+Superset 7.0 adds semantic layers as a datasource type, next to datasets
+(feature flag `SEMANTIC_LAYERS`, set in `superset/superset_config.py`). A semantic
+layer exposes **semantic views**: fixed metrics and dimensions that charts pick from,
+no custom SQL. Superset ships no provider, so this repo adds two as extensions in
+`superset/extensions/`, and the `semantic-views-sync` service keeps them filled:
+
+| Layer (connection shown in Superset) | One semantic view per | Who writes the SQL |
+|---|---|---|
+| **Trino** (native) | YAML file in `semantic_views/` | Superset (the native provider) runs it on the Trino connection |
+| **Cube** | public view in `cube/model/views/` | Cube |
+
+Both appear in **Datasets** with their layer as the connection, and charts use
+them like any dataset.
+
+### Flow
+
+```
+semantic_views/*.yaml ──semantic_views.py──► PUT /api/v1/semantic_layer/<Trino>   (YAML stored in Superset)
+                                            POST /api/v1/semantic_view/            (new view registered)
+cube/model/views/*.yml ──Cube /meta──────► POST /api/v1/semantic_view/            (new view registered)
+```
+
+`semantic-views-sync` runs `sync/semantic_views.py --watch --smoke-test`; every 10 s it:
+
+1. Validates the YAML (snake_case names, a source, metric descriptions, ...).
+2. If a file changed, uploads all definitions into the "Trino" layer and runs every
+   metric once on Trino (smoke test).
+3. For both layers: registers new views, updates descriptions, and deletes views whose
+   file or Cube view is gone (never one that charts still use).
+
+Editing a file updates the view in place (same id), so existing charts keep working.
+
+### Add a native view
+
+Copy `semantic_views/branch_performance.yaml` (table + joins) or
+`semantic_views/customer_segments.yaml` (SQL source), change `name` and the fields,
+and save. The view appears in Superset within about 10 seconds. Check the sync log:
+
+```bash
+docker compose logs -f semantic-views-sync
+python sync/semantic_views.py semantic_views --validate-only   # CI check, no Superset needed
+```
+
+### Add a Cube view
+
+Add a view to `cube/model/views/` (for example `branch_activity.yml`). Once Cube has
+loaded it, it appears in Superset. If it does not show up, run `docker compose restart
+cube` (see "Change the model" above).
 
 ---
 

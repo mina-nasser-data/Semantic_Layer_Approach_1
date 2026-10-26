@@ -58,7 +58,7 @@ services:
     build:
       context: ./superset
       args:
-        SUPERSET_VERSION: ${SUPERSET_VERSION:-6.0.0}
+        SUPERSET_VERSION: ${SUPERSET_VERSION:-7.0.0rc2}
     ports:
       - "8088:8088"
     environment:
@@ -70,6 +70,8 @@ services:
       CUBE_URI: postgresql://cube:${CUBE_SQL_PASSWORD}@cube:15432/cube
     volumes:
       - ./superset/superset_config.py:/app/pythonpath/superset_config.py:ro
+      # Superset extensions; cube-semantic-layer registers Cube as a semantic layer.
+      - ./superset/extensions:/app/extensions:ro
     depends_on:
       superset-db:
         condition: service_healthy
@@ -129,6 +131,27 @@ services:
       superset:
         condition: service_healthy
       trino:
+        condition: service_healthy
+
+  # Superset 7 semantic layers. Keeps two layers in sync, in --watch mode:
+  #   "Trino" - one semantic view per YAML file in ./semantic_views (uploaded via the API)
+  #   "Cube"  - one semantic view per public view in ./cube/model/views
+  # Add a file to either folder and the view appears in Superset's dataset list.
+  semantic-views-sync:
+    build: ./sync
+    environment:
+      SUPERSET_URL: http://superset:8088
+      SUPERSET_USERNAME: ${SUPERSET_ADMIN_USERNAME}
+      SUPERSET_PASSWORD: ${SUPERSET_ADMIN_PASSWORD}
+      CUBE_URL: http://cube:4000
+      CUBE_API_SECRET: ${CUBE_API_SECRET}
+    volumes:
+      - ./semantic_views:/semantic_views:ro
+    command: ["python", "semantic_views.py", "/semantic_views", "--watch", "--smoke-test"]
+    depends_on:
+      superset:
+        condition: service_healthy
+      cube:
         condition: service_healthy
 
 volumes:

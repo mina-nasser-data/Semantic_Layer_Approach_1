@@ -1,0 +1,34 @@
+# Native semantic view: customers and their activity, by segment and governorate.
+# Example of a view whose source is SQL (any SELECT) instead of a single table.
+
+name: customer_segments
+description: Customer activity by segment, governorate and product category.
+database: Trino
+
+source:
+  alias: s
+  sql: |
+    SELECT c.customer_id, c.segment, c.governorate, p.category,
+           f.amount, f.is_reversed
+    FROM warehouse.mart.fact_transaction f
+    JOIN warehouse.mart.dim_customer c ON f.customer_key = c.customer_key
+    JOIN warehouse.mart.dim_product  p ON f.product_key  = p.product_key
+
+dimensions:
+  - {name: segment,     expression: s.segment,     type: string, label: Segment}
+  - {name: governorate, expression: s.governorate, type: string, label: Governorate}
+  - {name: category,    expression: s.category,    type: string, label: Product Category}
+
+metrics:
+  - name: active_customers
+    label: Active Customers
+    expression: COUNT(DISTINCT s.customer_id)
+    type: integer
+    description: Customers with at least one transaction.
+    d3format: ",d"
+
+  - name: avg_amount_per_customer
+    label: Avg Amount per Customer (EGP)
+    expression: SUM(CASE WHEN NOT s.is_reversed THEN s.amount ELSE 0 END) / COUNT(DISTINCT s.customer_id)
+    description: Net amount of non-reversed transactions divided by active customers, in EGP.
+    d3format: ",.2f"

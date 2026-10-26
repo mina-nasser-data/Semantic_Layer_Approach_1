@@ -1,0 +1,10 @@
+{
+  "publisher": "scb",
+  "name": "native-semantic-layer",
+  "displayName": "Native Semantic Layer",
+  "version": "0.1.0",
+  "description": "Semantic views defined in YAML (./semantic_views), compiled to SQL and run on a Superset database connection.",
+  "backend": {
+    "entrypoint": "native_semantic_layer"
+  }
+}

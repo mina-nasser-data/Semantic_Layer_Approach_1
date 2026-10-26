@@ -1,0 +1,27 @@
+# Branch-level view: transaction measures by branch and date only.
+# Every public view here appears in Superset as a semantic view of the "Cube"
+# layer (semantic-views-sync picks it up within a few seconds).
+views:
+  - name: branch_activity
+    description: Transactions by branch and date. Grain = transaction.
+
+    cubes:
+      - join_path: transactions
+        includes:
+          - channel
+          - transaction_count
+          - net_amount
+          - net_fees
+          - reversal_rate
+
+      - join_path: transactions.dates
+        includes:
+          - full_date
+          - year
+          - month
+
+      - join_path: transactions.branches
+        includes:
+          - branch_name
+          - city
+          - region

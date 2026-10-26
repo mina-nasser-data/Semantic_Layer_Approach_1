@@ -1,0 +1,105 @@
+# =============================================================================
+# Native semantic view: reversals (operational risk). Grain = one row per transaction.
+# Bar charts by channel, branch, product, transaction type or amount band.
+#
+# Rates compare the reversed part with the matching total inside the same
+# aggregate, e.g. high_value_reversal_rate = reversed high-value / all high-value.
+# Overall reversal rate in the sample data is ~2.0%.
+# =============================================================================
+
+name: reversal_risk
+description: Reversal counts, rates and amounts by channel, branch, product and amount band. Grain = transaction.
+database: Trino
+
+source:
+  table: warehouse.mart.fact_transaction
+  alias: t
+  joins:
+    - {table: warehouse.mart.dim_date,     alias: d, condition: "t.date_key = d.date_key"}
+    - {table: warehouse.mart.dim_branch,   alias: b, condition: "t.branch_key = b.branch_key"}
+    - {table: warehouse.mart.dim_customer, alias: c, condition: "t.customer_key = c.customer_key"}
+    - {table: warehouse.mart.dim_product,  alias: p, condition: "t.product_key = p.product_key"}
+
+dimensions:
+  - {name: txn_date,         expression: d.full_date,        type: date,    label: Date}
+  - {name: day_name,         expression: d.day_name,         type: string,  label: Day of Week}
+  - {name: is_weekend,       expression: d.is_weekend,       type: boolean, label: Weekend}
+  - {name: channel,          expression: t.channel,          type: string,  label: Channel}
+  - {name: transaction_type, expression: t.transaction_type, type: string,  label: Transaction Type}
+  - {name: branch_name,      expression: b.branch_name,      type: string,  label: Branch}
+  - {name: region,           expression: b.region,           type: string,  label: Region}
+  - {name: product_name,     expression: p.product_name,     type: string,  label: Product}
+  - {name: category,         expression: p.category,         type: string,  label: Product Category}
+  - {name: segment,          expression: c.segment,          type: string,  label: Customer Segment}
+  - name: amount_band
+    label: Amount Band
+    type: string
+    description: Transaction size band (EGP).
+    expression: >-
+      CASE WHEN t.amount < 5000 THEN '1. < 5K'
+           WHEN t.amount < 25000 THEN '2. 5K - 25K'
+           WHEN t.amount < 100000 THEN '3. 25K - 100K'
+           ELSE '4. >= 100K' END
+
+metrics:
+  - name: reversed_count
+    label: Reversed Transactions
+    expression: COUNT(*) FILTER (WHERE t.is_reversed)
+    type: integer
+    description: Transactions that were reversed.
+    d3format: ",d"
+
+  - name: reversal_rate
+    label: Reversal Rate
+    expression: CAST(COUNT(*) FILTER (WHERE t.is_reversed) AS DOUBLE) / NULLIF(COUNT(*), 0)
+    description: Share of all transactions that were reversed.
+    d3format: ".2%"
+
+  - name: reversed_amount
+    label: Reversed Amount (EGP)
+    expression: SUM(t.amount) FILTER (WHERE t.is_reversed)
+    description: Total amount of reversed transactions, in EGP.
+    d3format: ",.0f"
+
+  - name: reversed_amount_share
+    label: Reversed Amount Share
+    expression: CAST(SUM(t.amount) FILTER (WHERE t.is_reversed) AS DOUBLE) / NULLIF(CAST(SUM(t.amount) AS DOUBLE), 0)
+    description: Share of total transaction amount that was reversed.
+    d3format: ".2%"
+
+  - name: high_value_reversal_count
+    label: High-Value Reversals
+    expression: COUNT(*) FILTER (WHERE t.is_reversed AND t.amount >= 50000)
+    type: integer
+    description: Reversed transactions of 50,000 EGP or more.
+    d3format: ",d"
+
+  - name: high_value_reversal_rate
+    label: High-Value Reversal Rate
+    expression: >-
+      CAST(COUNT(*) FILTER (WHERE t.is_reversed AND t.amount >= 50000) AS DOUBLE)
+      / NULLIF(COUNT(*) FILTER (WHERE t.amount >= 50000), 0)
+    description: Reversal rate among transactions of 50,000 EGP or more.
+    d3format: ".2%"
+
+  - name: digital_reversal_rate
+    label: Digital Reversal Rate
+    expression: >-
+      CAST(COUNT(*) FILTER (WHERE t.is_reversed AND t.channel IN ('Mobile', 'Internet')) AS DOUBLE)
+      / NULLIF(COUNT(*) FILTER (WHERE t.channel IN ('Mobile', 'Internet')), 0)
+    description: Reversal rate among Mobile and Internet transactions.
+    d3format: ".2%"
+
+  - name: weekend_reversal_rate
+    label: Weekend Reversal Rate
+    expression: >-
+      CAST(COUNT(*) FILTER (WHERE t.is_reversed AND d.is_weekend) AS DOUBLE)
+      / NULLIF(COUNT(*) FILTER (WHERE d.is_weekend), 0)
+    description: Reversal rate among transactions made on weekend days.
+    d3format: ".2%"
+
+  - name: avg_reversed_ticket
+    label: Avg Reversed Ticket (EGP)
+    expression: AVG(CAST(t.amount AS DOUBLE)) FILTER (WHERE t.is_reversed)
+    description: Average amount of a reversed transaction, in EGP.
+    d3format: ",.2f"
