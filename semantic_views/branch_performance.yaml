@@ -1,6 +1,6 @@
 # =============================================================================
 # Native semantic view (Superset 7 semantic layer "Trino").
-# One file = one semantic view. sync/semantic_views.py uploads it into Superset
+# One file = one semantic view. sync/sync.py uploads it into Superset
 # through the API; Superset compiles each chart query to SQL and runs it on the
 # "Trino" database connection. Rename = new view, so keep `name` stable.
 # =============================================================================
@@ -50,6 +50,6 @@ metrics:
 
   - name: reversal_rate
     label: Reversal Rate
-    expression: AVG(CASE WHEN t.is_reversed THEN 1.0 ELSE 0.0 END)
+    expression: AVG(CASE WHEN t.is_reversed THEN 1.0E0 ELSE 0.0E0 END)
     description: Share of transactions that were reversed.
     d3format: ".2%"

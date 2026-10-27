@@ -1,0 +1,33 @@
+# Cube view: channel adoption. How customers use Branch / ATM / Mobile / Internet,
+# by segment, region and month. Grain = transaction.
+# Copy into cube/model/views/; it appears in Superset as table "channel_adoption"
+# of the "Cube" database connection (+ Dataset -> Cube -> public), with no restart.
+views:
+  - name: channel_adoption
+    description: Transactions and digital share by channel, customer segment, region and month. Grain = transaction.
+
+    cubes:
+      - join_path: transactions
+        includes:
+          - channel
+          - transaction_type
+          - transaction_count
+          - net_amount
+          - digital_share
+          - active_customers
+
+      - join_path: transactions.dates
+        includes:
+          - full_date
+          - year
+          - quarter
+          - month_name
+          - is_weekend
+
+      - join_path: transactions.customers
+        includes:
+          - segment
+
+      - join_path: transactions.branches
+        includes:
+          - region

@@ -1,8 +1,6 @@
-# Connection Superset uses to reach the warehouse (through Trino).
-# ${TRINO_URI} is filled in by sync.py from the environment, so the same file
-# works for local, staging and prod. Never commit credentials.
+# Connection Superset uses to reach the warehouse (through Trino). No password in it.
 database_name: Trino
-sqlalchemy_uri: ${TRINO_URI}
+sqlalchemy_uri: trino://superset@trino:8080/warehouse
 cache_timeout: null
 expose_in_sqllab: true
 allow_run_async: false

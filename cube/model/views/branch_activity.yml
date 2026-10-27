@@ -1,6 +1,6 @@
 # Branch-level view: transaction measures by branch and date only.
-# Every public view here appears in Superset as a semantic view of the "Cube"
-# layer (semantic-views-sync picks it up within a few seconds).
+# Every view in this folder appears in Superset as a table of the "Cube" database
+# connection (+ Dataset -> Cube -> public), with no restart.
 views:
   - name: branch_activity
     description: Transactions by branch and date. Grain = transaction.

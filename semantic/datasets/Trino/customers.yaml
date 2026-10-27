@@ -36,7 +36,6 @@ filter_select_enabled: true
 uuid: 0052964f-bd01-48a3-b683-24ab395c49ea        # never change once deployed
 database_uuid: c558dd1e-a16c-4438-8dda-1e86d43a733c
 is_managed_externally: true
-external_url: ${GIT_REPO_URL:-}
 version: 1.0.0
 
 metrics:

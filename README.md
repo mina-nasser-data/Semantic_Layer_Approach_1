@@ -9,7 +9,6 @@ Trino warehouse:
 | Where metrics live | Superset datasets, as YAML in `semantic/` | Cube data model, as YAML in `cube/model/` |
 | How they reach Superset | `sync.py` imports them through the Superset REST API | Superset queries Cube live through a database connection |
 | Who runs the SQL | Superset → Trino | Superset → Cube → Trino |
-| CI/CD | `.gitlab-ci.yml` validates and deploys | Not in CI; separate from `semantic/` |
 
 ```
 Approach 1   semantic/*.yaml ──(sync.py)──► Superset datasets + metrics ──────────► Trino ──► warehouse
@@ -47,7 +46,7 @@ The only difference is **where the semantic layer sits**: inside Superset
 
 | Component | Role | Approach |
 |---|---|---|
-| `semantic-sync` | Watches `semantic/`, validates, imports datasets and metrics into Superset, smoke-tests them | 1 |
+| `sync` | Watches `semantic/` (imports datasets and metrics) and `semantic_views/` (one semantic view per file) | 1, Superset 7 |
 | Superset | BI tool. Approach 1: holds the metrics. Approach 2: only queries Cube | both |
 | `superset-db` | Superset's own metadata (users, charts, datasets, the imported metrics) | both |
 | Cube | External semantic layer: reads `cube/model/`, turns semantic queries into Trino SQL | 2 |
@@ -59,17 +58,15 @@ The only difference is **where the semantic layer sits**: inside Superset
 | Path | What it is |
 |---|---|
 | `semantic/metadata.yaml` | Approach 1: bundle header Superset expects (`type: SqlaTable`) |
-| `semantic/databases/*.yaml` | Approach 1: warehouse connection; URI comes from `${TRINO_URI}` |
+| `semantic/databases/*.yaml` | Approach 1: warehouse connection (Trino URI, no password) |
 | `semantic/datasets/<db>/*.yaml` | Approach 1: one file per dataset: table or SQL, columns, **metrics** |
-| `sync/sync.py` | Approach 1: render `${VAR}` → validate → import databases, then datasets (overwrite) → smoke test (columns + every metric) |
-| `.gitlab-ci.yml` | Approach 1: validate on MR, deploy to staging on MR, deploy to prod on merge |
+| `sync/sync.py` | Imports `semantic/` (datasets, overwrite) and syncs `semantic_views/` into the "Trino" semantic layer |
 | `cube/model/cubes/*.yml` | Approach 2: one cube per warehouse table: dimensions, measures, joins |
 | `cube/model/views/*.yml` | Approach 2: what Superset sees: flat "tables" assembled from the cubes |
-| `semantic_views/*.yaml` | Superset 7 semantic layer "Trino": one file per native semantic view (source, dimensions, metrics) |
-| `sync/semantic_views.py` | Superset 7: uploads `semantic_views/` into the "Trino" layer and registers every view of both layers (Trino, Cube) |
-| `superset/extensions/` | Superset 7 semantic layer providers: `native-semantic-layer` (YAML → SQL on Trino), `cube-semantic-layer` (Cube REST API) |
+| `semantic_views/*.yaml` | Superset 7: one file per semantic view (source, dimensions, metrics) |
+| `superset/semantic_layer.py` | Superset 7: the semantic layer type "native" that turns chart queries into SQL on Trino |
 | `superset/` | Superset image (Postgres + Trino drivers), config, bootstrap (also registers the Cube connection) |
-| `trino/catalog/` | Trino catalogs: `warehouse` (sample star schema) and `tpch` (built-in sample) |
+| `trino/catalog/` | Trino catalog `warehouse` (sample star schema) |
 | `warehouse/init/` | Sample banking star schema loaded into the `warehouse` Postgres |
 
 ## Getting started: from clone to Superset
@@ -106,15 +103,14 @@ warehouse is created automatically on the first start.
 **4. Wait until the datasets are loaded**
 
 ```bash
-docker compose logs -f semantic-sync
+docker compose logs -f sync
 ```
 
 Wait for these lines, then press `Ctrl+C`:
 
 ```
-[sync] valid: ... datasets, ... metrics
-[sync] imported into Superset (databases, then datasets)
-[sync] smoke test passed: ...
+imported the datasets in semantic/
+semantic views: branch_performance, customer_segments, reversal_risk
 ```
 
 **5. Open Superset**
@@ -127,15 +123,15 @@ per file in `semantic/datasets/`, each with its metrics. The **Cube** connection
 **6. Add a new dataset (new YAML file)**
 
 Every new YAML file needs its **own new `uuid`**. Never copy the `uuid` from another
-file: two files with the same uuid fail validation, and an invalid uuid fails the
-import, which blocks the whole sync. Generate one with:
+file: two files with the same uuid overwrite each other, and an invalid uuid fails
+the import, which blocks the whole sync. Generate one with:
 
 ```bash
 python -c "import uuid; print(uuid.uuid4())"
 ```
 
 Put it in the file's `uuid:` line, give the dataset its own `table_name`, save the
-file in `semantic/datasets/Trino/`, and check `docker compose logs semantic-sync`.
+file in `semantic/datasets/Trino/`, and check `docker compose logs sync`.
 Once a dataset is deployed, never change its uuid.
 
 To stop: `docker compose down` (data is kept). To start again: `docker compose up -d`.
@@ -152,11 +148,10 @@ Variables in `.env` (see `.env.example`):
 | `WAREHOUSE_DB_PASSWORD` | Sample warehouse Postgres, read by Trino |
 | `CUBE_API_SECRET` | Cube (signs API tokens) |
 | `CUBE_SQL_PASSWORD` | Cube SQL API password; Superset's Cube connection uses it |
-| `GIT_REPO_URL` | Optional: shown as each dataset's source link |
 
 ```bash
 docker compose up -d --build
-docker compose logs -f semantic-sync
+docker compose logs -f sync
 ```
 
 | URL | What |
@@ -172,13 +167,10 @@ docker compose logs -f semantic-sync
 ## Approach 1: Native semantic layer (Superset datasets as code)
 
 Datasets and metrics live as YAML in `semantic/`. A small sync script pushes them
-into Superset through its REST API, locally on every file save, and from CI on
-every merge. Nobody imports by hand.
+into Superset through its REST API on every file save. Nobody imports by hand.
 
 ```
-semantic/*.yaml ──(git push)──► CI: validate → staging + smoke test → prod
-      │
-      └─(local, docker compose)──► semantic-sync container (watch) ──► Superset ──► Trino
+semantic/*.yaml ──► sync container (watch) ──► Superset ──► Trino
 ```
 
 Locally, edit any file in `semantic/`, save, and within a few seconds the sync
@@ -191,8 +183,8 @@ their metrics, ready for charts.
   semantic/datasets/*.yaml        1. Define datasets and metrics as YAML in Git
             │
             ▼
-  sync.py                         2. Render ${VAR} → validate → import → smoke test
-            │  REST API              (locally on every save, in CI on every merge)
+  sync.py                         2. Import (on every save)
+            │  REST API
             ▼
   Superset datasets + metrics     3. The semantic layer lives here
             │  metric SQL inlined    A chart picks "net_amount"; Superset pastes its SQL
@@ -209,8 +201,7 @@ by Superset.
 ### Add or change a metric
 
 1. Edit the dataset file in `semantic/datasets/...` (or add a new file).
-2. `docker compose logs semantic-sync` shows `valid`, `imported`, `smoke test passed`.
-3. Commit, open a merge request. CI validates and deploys to staging; merge deploys to prod.
+2. `docker compose logs sync` shows `imported the datasets in semantic/`.
 
 ### Start from an existing dataset
 
@@ -223,24 +214,21 @@ copy `datasets/...yaml` into `semantic/datasets/`, keep its `uuid`, point
 - **`uuid` never changes.** A new uuid = a new duplicate dataset. A new file needs a new,
   valid uuid (`[guid]::NewGuid()` in PowerShell).
 - **One invalid file blocks the whole sync.** Superset imports the folder as one bundle;
-  if one file fails, nothing is imported. Check `docker compose logs semantic-sync`.
+  if one file fails, nothing is imported. Check `docker compose logs sync`.
 - **Don't rename metrics.** Charts reference metrics by name. Add a new one instead.
-- **Deleting a metric in Git deletes it in Superset** (import runs with overwrite +
-  sync). Check no chart uses it first.
-- **Deleting a dataset file deletes the dataset in Superset** on the next sync. Superset's
-  import itself never deletes, so `sync.py` removes Git-managed datasets (`is_managed_externally`)
-  on the bundle's databases whose file is gone. It never deletes datasets built in the UI, and
-  skips (with a `WARNING` in the log) any dataset that charts still use: move those charts first.
+- **Deleting a metric in Git deletes it in Superset** (import runs with overwrite).
+  Check no chart uses it first.
+- **Deleting a dataset file does not delete the dataset in Superset.** Superset's import
+  only creates and updates; delete the dataset in the UI.
 - **Only files inside `semantic/` are synced.** Copies kept elsewhere (e.g. drafts outside the
   repo) are not seen; edit the file in `semantic/datasets/`.
-- **Database files are imported separately with overwrite**, because Superset's dataset
-  import never updates an existing connection. Changing `${TRINO_URI}` takes effect on the next sync.
-- **Credentials never go in Git**: use `${VAR}` placeholders and CI variables, or
-  `SUPERSET_DB_PASSWORDS`.
+- **The database file only creates the connection.** Superset's dataset import never
+  updates an existing connection; change its URI in the Superset UI.
+- **Credentials never go in Git.** The Trino URI in `semantic/databases/Trino.yaml` has no
+  password; a connection that needs one is set up in the Superset UI.
 - **Lock editing with permissions.** `is_managed_externally: true` marks the dataset as
   Git-owned, but Superset does not block edits through it. Give business users roles
-  without write access to datasets; anything edited anyway is reset on the next deploy.
-- Every metric needs `description` and `snake_case` name (enforced by `sync.py`).
+  without write access to datasets; anything edited anyway is reset on the next sync.
 
 ---
 
@@ -252,15 +240,14 @@ the results to any client. Superset is one of those clients: it connects to
 Cube's **SQL API**, which speaks the Postgres protocol, so to Superset Cube looks
 like a Postgres database whose tables are the Cube views.
 
-This approach is deliberately **separate from `semantic/` and CI/CD**: nothing in
-`sync.py` or `.gitlab-ci.yml` touches Cube.
+This approach is deliberately **separate from `semantic/`**: `sync.py` never touches Cube.
 
 ### Flow
 
 ```
   cube/model/cubes/*.yml          1. Define cubes (tables), joins and measures as YAML
   cube/model/views/*.yml             and the views clients may query
-            │  read when Cube starts (docker compose restart cube)
+            │  re-read on the next query (dev mode)
             ▼
   Cube                            2. The semantic layer lives here
             ▲                        Turns "MEASURE(net_amount) by region" into Trino SQL,
@@ -278,7 +265,7 @@ This approach is deliberately **separate from `semantic/` and CI/CD**: nothing i
 Superset never sees the formula or the joins; it only asks Cube for a measure
 by name. Any other client (another BI tool, a notebook, an application) asking
 for `net_amount` gets the same SQL and the same number. Model changes are live
-after a Cube restart; there is no import step.
+(no restart in dev mode); there is no import step.
 
 ### The model
 
@@ -334,13 +321,20 @@ add metrics as **Custom SQL** with `MEASURE(<measure name>)`, e.g. `MEASURE(net_
 Dimensions, filters and time grains (`full_date` by month, quarter, ...) work as usual;
 Cube translates Superset's `DATE_TRUNC`, `WHERE` and `GROUP BY`.
 
+**New views:** add a file to `cube/model/views/` and the view is listed under
+**+ Dataset → Cube → public** right away (no restart, no sync).
+
+**Saved metrics:** a dataset created on the Cube connection gets one saved metric per
+Cube measure of its view, e.g. `net_amount` = `MEASURE(net_amount)`, with the title and
+description from the Cube model (`superset/cube_connection.py`). For a dataset created
+before, or after adding measures to the view, click **Sync columns from source**.
+
 ### Change the model
 
 1. Edit or add files in `cube/model/cubes/` or `cube/model/views/`.
-2. `docker compose restart cube`. (Cube's file watcher does not see changes on a
-   Windows bind mount.)
-3. Check the change in the Playground (http://localhost:4000), then refresh Superset.
-   Superset queries Cube live, so there is no import step.
+2. Check the change in the Playground (http://localhost:4000), then refresh Superset.
+   In dev mode (`CUBEJS_DEV_MODE=true`) Cube re-reads the model on the next query, so
+   no restart and no import step. With dev mode off (production), restart Cube.
 
 To expose a new measure or dimension to Superset, add it to the cube **and** to the
 view's `includes` list.
@@ -352,51 +346,51 @@ view's `includes` list.
 Superset 7.0 adds semantic layers as a datasource type, next to datasets
 (feature flag `SEMANTIC_LAYERS`, set in `superset/superset_config.py`). A semantic
 layer exposes **semantic views**: fixed metrics and dimensions that charts pick from,
-no custom SQL. Superset ships no provider, so this repo adds two as extensions in
-`superset/extensions/`, and the `semantic-views-sync` service keeps them filled:
+no custom SQL.
 
-| Layer (connection shown in Superset) | One semantic view per | Who writes the SQL |
-|---|---|---|
-| **Trino** (native) | YAML file in `semantic_views/` | Superset (the native provider) runs it on the Trino connection |
-| **Cube** | public view in `cube/model/views/` | Cube |
-
-Both appear in **Datasets** with their layer as the connection, and charts use
-them like any dataset.
-
-### Flow
+**Put a YAML file in `semantic_views/` and it appears in Superset as a semantic view.**
+That is the whole flow:
 
 ```
-semantic_views/*.yaml ──semantic_views.py──► PUT /api/v1/semantic_layer/<Trino>   (YAML stored in Superset)
-                                            POST /api/v1/semantic_view/            (new view registered)
-cube/model/views/*.yml ──Cube /meta──────► POST /api/v1/semantic_view/            (new view registered)
+semantic_views/*.yaml ──sync.py─────────► PUT  /api/v1/semantic_layer/<Trino>   (YAML stored in Superset)
+                                            POST /api/v1/semantic_view/            (one view per file)
 ```
 
-`semantic-views-sync` runs `sync/semantic_views.py --watch --smoke-test`; every 10 s it:
+The `sync` service runs `sync/sync.py`. Every 5 seconds,
+when a file changed, it:
 
-1. Validates the YAML (snake_case names, a source, metric descriptions, ...).
-2. If a file changed, uploads all definitions into the "Trino" layer and runs every
-   metric once on Trino (smoke test).
-3. For both layers: registers new views, updates descriptions, and deletes views whose
-   file or Cube view is gone (never one that charts still use).
+1. Stores all the YAML in the semantic layer **Trino**.
+2. Creates a semantic view for each new file.
+3. Deletes the semantic view of each removed file.
 
-Editing a file updates the view in place (same id), so existing charts keep working.
+Editing a file changes the view in place (same id), so existing charts keep working.
+The views appear in **Datasets** with **Trino** as their connection.
 
-### Add a native view
+Superset ships no semantic layer type, so `superset/semantic_layer.py` adds one,
+`native`: for each chart it turns the picked metrics, dimensions and filters into one
+`SELECT` and runs it on the Superset connection named in the file (`database:`,
+default `Trino`). `superset_config.py` loads it at startup (`FLASK_APP_MUTATOR`).
+Without this file Superset still starts, but every semantic view fails to load.
+
+### Add a view
 
 Copy `semantic_views/branch_performance.yaml` (table + joins) or
 `semantic_views/customer_segments.yaml` (SQL source), change `name` and the fields,
-and save. The view appears in Superset within about 10 seconds. Check the sync log:
+and save. Check the log:
 
 ```bash
-docker compose logs -f semantic-views-sync
-python sync/semantic_views.py semantic_views --validate-only   # CI check, no Superset needed
+docker compose logs -f sync
 ```
 
-### Add a Cube view
+```
+created semantic view(s): my_new_view
+synced 4 semantic view(s): branch_performance, customer_segments, reversal_risk, my_new_view
+```
 
-Add a view to `cube/model/views/` (for example `branch_activity.yml`). Once Cube has
-loaded it, it appears in Superset. If it does not show up, run `docker compose restart
-cube` (see "Change the model" above).
+Dimension `type` is one of `string`, `number`, `integer`, `boolean`, `date`, `time`;
+`date` / `time` dimensions get Day / Week / Month / Quarter / Year grains. Metric `type`
+is `number` (default) or `integer`. Use `1.0E0`, not `1.0`, in ratios: Trino treats
+`1.0` as a decimal with one digit, so `AVG(... 1.0 ...)` rounds 1.95% to 0.0.
 
 ---
 
@@ -410,8 +404,6 @@ cube` (see "Change the model" above).
   functions, CTEs, `approx_percentile`, ...), SQL Lab, drill-down, cross-filters.
 - **Metrics are first-class in Superset.** Business users pick `net_amount` from a list
   with its label, description and number format; no SQL needed in charts.
-- **Governed delivery is already built.** Git → validate → staging → smoke test → prod.
-  A metric or column that does not run on the warehouse fails the deploy, not a dashboard.
 - **Easy to adopt.** A dataset can be built in the UI, exported and committed.
 
 **Cons**
@@ -424,8 +416,7 @@ cube` (see "Change the model" above).
   `branch_monthly`, ...). Changing it means editing every copy.
 - **Metrics cannot reference other metrics**; each is a standalone SQL expression.
 - **No acceleration layer.** Only Superset's result cache; heavy queries always hit Trino.
-- **Deletes depend on the sync script.** Superset's import never deletes; `sync.py` adds
-  that step, and a dataset still used by charts is kept until the charts are moved.
+- **No deletes.** Superset's import never deletes, so a removed file leaves its dataset in Superset.
 
 ### Approach 2: External semantic layer (Cube)
 
@@ -436,7 +427,7 @@ cube` (see "Change the model" above).
   each query, and views compose cubes without hand-written SQL.
 - **Composable measures.** Ratios and averages are built from other measures
   (`avg_txn_amount = net_amount / non_reversed_count`), so a rule lives in one place.
-- **Changes are live.** Edit the model, restart Cube, and every client sees the new
+- **Changes are live.** Edit the model and every client sees the new
   definition; no import into Superset.
 - **Performance and security features** available when needed: pre-aggregations
   (stored in Cube Store) and row-level access rules in the model that apply to every
@@ -453,15 +444,14 @@ cube` (see "Change the model" above).
 - **Restricted SQL.** Only queries Cube can map to its model are accepted. Free-form SQL
   on Cube (e.g. window functions or Superset virtual datasets over the views) may be
   rejected; such logic belongs in the Cube model.
-- **Not in CI/CD here.** The Cube model has no validation, smoke test or staged deploy
-  in this repo, and Superset datasets built on Cube views in the UI are not in Git.
+- **Datasets built on Cube views in the Superset UI are not in Git.**
 - **New skill set.** The team has to learn Cube's modeling language and debug
   through the SQL Cube generates (visible in the Playground).
 
 ### When to choose which
 
 - **Native** fits when Superset is the only consumer and the team wants the
-  smallest, already-automated setup.
+  smallest setup.
 - **Cube** fits when several tools or applications must show the same numbers, when
   the model has many joined tables, or when pre-aggregation or central row-level
   security is needed, and the team can operate one more service.
@@ -475,8 +465,8 @@ cube` (see "Change the model" above).
   what the bank runs.
 
 **Native**
-- Use a dedicated service account for CI. Set `SUPERSET_AUTH_PROVIDER=ldap` if
-  Superset authenticates against LDAP. OAuth-only logins can't be used by the script.
+- The sync scripts log in with a Superset database (AUTH_DB) user; use a dedicated
+  service account. OAuth-only logins can't be used by the scripts.
 
 **Cube**
 - **Turn off dev mode** (`CUBEJS_DEV_MODE=false`). Dev mode disables authentication,

@@ -15,7 +15,6 @@ filter_select_enabled: true         # Dashboard filters show a dropdown of the c
 uuid: b8e6d576-e11f-473d-ad19-2cc8bd89a1ab           # Permanent identity of the dataset. Never change it: a new uuid = a duplicate dataset
 database_uuid: c558dd1e-a16c-4438-8dda-1e86d43a733c  # Links the dataset to the connection in semantic/databases/Trino.yaml
 is_managed_externally: true         # Marks the dataset as owned by Git, not the UI (UI edits are overwritten on the next sync)
-external_url: ${GIT_REPO_URL:-}     # Link to this file in Git; sync.py fills it from the environment (empty if unset)
 version: 1.0.0                      # Superset import format version; leave as is
 
 # -----------------------------------------------------------------------------
@@ -40,8 +39,6 @@ metrics:
 #   groupby: true    -> usable as a dimension (group by / x-axis / series) in charts
 #   filterable: true -> usable in filters
 # Measures (amount, fee_amount) are groupby: false: you aggregate them, not group by them.
-# The sync smoke test selects all of these columns through Trino, so a column that
-# does not exist in the table makes the sync fail before anyone sees a broken chart.
 # -----------------------------------------------------------------------------
 columns:
   - {column_name: transaction_id,   type: BIGINT,        groupby: false, filterable: true}                                    # Primary key, not a dimension
