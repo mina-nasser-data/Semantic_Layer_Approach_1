@@ -1,3 +1,6 @@
 .env
 __pycache__/
 *.zip
+
+# Local media and demo build output (too large for GitHub)
+presentation/
